@@ -240,7 +240,7 @@ A simple deterministic PRNG.
       for (var x = 0; x < game.width; ++x) {
         sb.append("#");
       }
-      sb.append("#\n");
+      sb.append("#\r\n");
 
       // Board rows
       for (var y = 0; y < game.height; ++y) {
@@ -249,7 +249,7 @@ A simple deterministic PRNG.
           let p = new Point(x, y);
           sb.append(cellChar(game, p));
         }
-        sb.append("#\n");
+        sb.append("#\r\n");
       }
 
       // Bottom border
@@ -257,14 +257,14 @@ A simple deterministic PRNG.
       for (var x = 0; x < game.width; ++x) {
         sb.append("#");
       }
-      sb.append("#\n");
+      sb.append("#\r\n");
 
       let statusText = when (game.status) {
         is Playing -> "Playing";
         is GameOver -> "GAME OVER";
         else -> "";
       };
-      sb.append("Score: ${game.score.toString()}  ${statusText}\n");
+      sb.append("Score: ${game.score.toString()}  ${statusText}\r\n");
 
       sb.toString()
     }
