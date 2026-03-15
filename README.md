@@ -4,7 +4,7 @@ A snake game written in [Temper](https://github.com/temperlang/temper), a progra
 The game is about 300 lines.
 The compiler changes required to make it run are about 600.
 
-Compiler branch: [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake) ([PR #376](https://github.com/temperlang/temper/pull/376))
+Compiler branch: [`do-more-crimes-to-play-snake-multiplayer`](https://github.com/temperlang/temper/tree/do-more-crimes-to-play-snake-multiplayer) (extends [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake) with WebSocket and terminal size support)
 
 ## The Situation
 
@@ -601,7 +601,7 @@ CI publishes standalone repos for all six backends:
 | C# | [snake-csharp](https://github.com/notactuallytreyanastasio/snake-csharp) | `dotnet run --project snake-game` |
 | Java | [snake-java](https://github.com/notactuallytreyanastasio/snake-java) | `bash run.sh` |
 
-Every push to this repo triggers a GitHub Actions pipeline that checks out the [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake) compiler branch, builds it from source with `./gradlew installDist`, compiles the game for all 6 backends, runs 18 tests, and if they pass, publishes the compiled output to the 6 target repositories via SSH deploy keys.
+Every push to this repo triggers a GitHub Actions pipeline that checks out the [`do-more-crimes-to-play-snake-multiplayer`](https://github.com/temperlang/temper/tree/do-more-crimes-to-play-snake-multiplayer) compiler branch, builds it from source with `./gradlew installDist`, compiles the game for all 6 backends, runs 31 tests, and if they pass, publishes the compiled output to the 6 target repositories via SSH deploy keys.
 The compiled output stays in sync automatically.
 You clone one repo, run one command, and you're playing snake.
 
@@ -630,7 +630,7 @@ Here is how to build and run each one:
 ```bash
 # Build the compiler
 git clone https://github.com/temperlang/temper.git
-cd temper && git checkout do-crimes-to-play-snake
+cd temper && git checkout do-more-crimes-to-play-snake-multiplayer
 ./gradlew installDist
 # The CLI is at cli/build/install/temper/bin/temper — add it to your PATH
 
