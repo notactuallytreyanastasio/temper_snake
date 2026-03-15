@@ -678,7 +678,7 @@ mvn -f temper.out/java/snake-game/pom.xml compile exec:java@snake_game.SnakeGame
 temper test -b js
 ```
 
-18 tests.
+31 tests.
 They pass.
 
 ## Controls
@@ -688,6 +688,115 @@ No Enter needed — all backends use raw terminal mode for single-keypress input
 The snake starts going right.
 
 For some reason, with the Rust version, you have to hit a button for it to start.
+
+## Multiplayer
+
+The single-player game was fine.
+But it was lonely.
+
+The obvious next step was to make it multiplayer.
+Over the network.
+Using WebSockets.
+Written in Temper.
+Compiled to all the backends.
+
+There was, again, a problem.
+Temper had no network stack.
+It could not open a socket.
+It could not listen on a port.
+It could not send or receive messages over a wire.
+
+The obvious solution was to modify the compiler between the hours of 1am and 5am on a different Saturday.
+
+### The WebSocket Module
+
+I added a new `std/ws` module to the Temper standard library with six connected functions and two opaque types:
+
+```temper
+@connected("WsServer")
+export interface WsServer {}
+
+@connected("WsConnection")
+export interface WsConnection {}
+
+@connected("wsListen")
+export let wsListen(port: Int): Promise<WsServer> { panic() }
+
+@connected("wsAccept")
+export let wsAccept(server: WsServer): Promise<WsConnection> { panic() }
+
+@connected("wsConnect")
+export let wsConnect(url: String): Promise<WsConnection> { panic() }
+
+@connected("wsSend")
+export let wsSend(conn: WsConnection, msg: String): Promise<Empty> { panic() }
+
+@connected("wsRecv")
+export let wsRecv(conn: WsConnection): Promise<String?> { panic() }
+
+@connected("wsClose")
+export let wsClose(conn: WsConnection): Promise<Empty> { panic() }
+```
+
+`WsServer` and `WsConnection` are opaque `@connected` interfaces — empty in Temper, backed by native WebSocket objects in each backend.
+The JS implementation uses the `ws` npm package with a message queue pattern (messages that arrive before `wsRecv` is called get buffered).
+The Rust implementation uses `tungstenite` with `Mutex`-wrapped connections for thread safety.
+
+I also added `terminalColumns()` and `terminalRows()` to `std/io` so the server can size the board to fit the terminal.
+
+Compiler branch: [`do-more-crimes-to-play-snake-multiplayer`](https://github.com/temperlang/temper/tree/do-more-crimes-to-play-snake-multiplayer)
+
+### Multi-Snake Game Logic
+
+The single-player `SnakeGame` has one snake.
+The multiplayer `MultiSnakeGame` has a `List<PlayerSnake>`, each with their own segments, direction, score, and alive/dead status.
+
+`multiTick` handles the collision detection that makes multiplayer interesting:
+
+1. Wall collision — each snake checked independently
+2. Self collision — your head hits your own body
+3. Head-to-body — your head hits another snake's body
+4. Head-to-head — two snakes move to the same cell, both die
+
+Each player gets distinct symbols: `@`/`o` for player 0, `#`/`+` for player 1, `$`/`~` for player 2, and so on.
+Food is shared — first snake to reach it gets the point.
+Players can join dynamically.
+The board scales to the terminal size.
+
+All of this is pure Temper.
+It compiles to every backend.
+The multiplayer logic is not a wrapper around the compiled output — it IS the compiled output.
+
+### The Protocol
+
+The protocol is deliberately minimal.
+The server sends rendered frames directly as WebSocket text messages — the client just prints whatever it receives.
+The client sends single-character direction codes: `u`, `d`, `l`, `r`.
+
+No JSON parsing.
+No serialization library.
+No message framing.
+The server renders the game, sends the ASCII art, the client displays it.
+
+### Playing Multiplayer
+
+```bash
+# Terminal 1: Start the server
+cd temper.out/js && node snake-server/index.js
+
+# Terminal 2: Connect as player 1
+cd temper.out/js && node snake-client/index.js
+
+# Terminal 3: Connect as player 2
+cd temper.out/js && node snake-client/index.js
+```
+
+Each client connects via WebSocket to the server on port 8080.
+The server runs the authoritative game loop at 200ms ticks and broadcasts the board to all players.
+Use w/a/s/d to steer.
+
+You can connect as many players as you want.
+The board is sized to your terminal minus a margin.
 
 ## The Numbers
 
@@ -707,19 +816,32 @@ One target framework bumped because .NET added a class with the same name as one
 
 One `\n` changed to `\r\n` because terminals are from the 1970s.
 
-The snake game itself is about 300 lines.
+The snake game itself is about 300 lines of single-player logic and 400 lines of multiplayer logic.
+
+The WebSocket module added 554 lines to the compiler across 13 files.
+
+Six more connected functions.
+Two opaque types.
+One message queue pattern.
+One `Mutex`-wrapped WebSocket.
 
 ## Project Structure
 
 ```
 src/
   config.temper.md       - library config
-  snake.temper.md        - game logic, types, PRNG, tick, render
+  snake.temper.md        - game logic: single-player + multiplayer types, tick, render
   brain.temper.md        - user-editable move() function
 game/
-  config.temper.md       - game runner config
+  config.temper.md       - single-player game runner config
   run.temper.md          - async input loop + game loop
+server/
+  config.temper.md       - multiplayer server config
+  server.temper.md       - WebSocket server: accept loop, game loop, broadcast
+client/
+  config.temper.md       - multiplayer client config
+  client.temper.md       - WebSocket client: input + display
 test/
   config.temper.md       - test module config
-  snake_test.temper.md   - 18 unit tests
+  snake_test.temper.md   - 31 unit tests (18 single-player + 13 multiplayer)
 ```

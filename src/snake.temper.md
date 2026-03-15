@@ -285,5 +285,442 @@ A simple deterministic PRNG.
       " "
     }
 
+## Multiplayer Types
 
+    export sealed interface PlayerStatus {}
+    export class Alive() extends PlayerStatus {}
+    export class Dead() extends PlayerStatus {}
+
+    export class PlayerSnake(
+      public id: Int,
+      public segments: List<Point>,
+      public direction: Direction,
+      public score: Int,
+      public status: PlayerStatus,
+    ) {}
+
+    export class MultiSnakeGame(
+      public width: Int,
+      public height: Int,
+      public snakes: List<PlayerSnake>,
+      public food: Point,
+      public rngSeed: Int,
+      public tickCount: Int,
+    ) {}
+
+## Creating a Multi-Player Game
+
+    export let newMultiGame(
+      width: Int, height: Int, numPlayers: Int, seed: Int,
+    ): MultiSnakeGame {
+      let snakeBuilder = new ListBuilder<PlayerSnake>();
+      var currentSeed = seed;
+      for (var i = 0; i < numPlayers; ++i) {
+        let spawn = spawnPosition(width, height, i, numPlayers);
+        let dir = spawn.direction;
+        let startX = spawn.point.x;
+        let startY = spawn.point.y;
+        let delta = directionDelta(dir);
+        let segments: List<Point> = [
+          new Point(startX, startY),
+          new Point(startX - delta.x, startY - delta.y),
+          new Point(startX - delta.x * 2, startY - delta.y * 2),
+        ];
+        snakeBuilder.add(new PlayerSnake(i, segments, dir, 0, new Alive()));
+      }
+      let allSegments = collectAllSegments(snakeBuilder.toList());
+      let foodResult = placeFood(allSegments, width, height, currentSeed);
+      new MultiSnakeGame(
+        width, height, snakeBuilder.toList(),
+        foodResult.point, foodResult.seed, 0,
+      )
+    }
+
+## Spawn Position
+
+    class SpawnInfo(public point: Point, public direction: Direction) {}
+
+    let spawnPosition(
+      width: Int, height: Int, index: Int, total: Int,
+    ): SpawnInfo {
+      var cx = 0;
+      var cy = 0;
+      if (width > 0) { cx = do { width / 2 } orelse 0; }
+      if (height > 0) { cy = do { height / 2 } orelse 0; }
+      var qx = 0;
+      var qy = 0;
+      if (width > 0) { qx = do { width / 4 } orelse 0; }
+      if (height > 0) { qy = do { height / 4 } orelse 0; }
+      // Spread players around the board
+      var slot = 0;
+      if (total > 0) { slot = do { index % 4 } orelse 0; }
+      if (slot == 0) { return new SpawnInfo(new Point(qx, cy), new Right()); }
+      if (slot == 1) { return new SpawnInfo(new Point(width - qx - 1, cy), new Left()); }
+      if (slot == 2) { return new SpawnInfo(new Point(cx, qy), new Down()); }
+      new SpawnInfo(new Point(cx, height - qy - 1), new Up())
+    }
+
+## Collect All Segments
+
+    let collectAllSegments(snakes: List<PlayerSnake>): List<Point> {
+      let builder = new ListBuilder<Point>();
+      for (var i = 0; i < snakes.length; ++i) {
+        let snake = snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        for (var j = 0; j < snake.segments.length; ++j) {
+          builder.add(snake.segments.getOr(j, new Point(0, 0)));
+        }
+      }
+      builder.toList()
+    }
+
+## Multi-Player Tick
+
+    export let multiTick(
+      game: MultiSnakeGame,
+      directions: List<Direction>,
+    ): MultiSnakeGame {
+      // Step 1: compute new directions (reject opposite)
+      let newDirs = new ListBuilder<Direction>();
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        let inputDir = directions.getOr(i, snake.direction);
+        if (isOpposite(snake.direction, inputDir)) {
+          newDirs.add(snake.direction);
+        } else {
+          newDirs.add(inputDir);
+        }
+      }
+
+      // Step 2: compute new heads for alive snakes
+      let newHeads = new ListBuilder<Point>();
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        if (snake.status is Alive) {
+          let dir = newDirs.toList().getOr(i, new Right());
+          let delta = directionDelta(dir);
+          let head = snake.segments.getOr(0, new Point(0, 0));
+          newHeads.add(new Point(head.x + delta.x, head.y + delta.y));
+        } else {
+          newHeads.add(new Point(-1, -1));
+        }
+      }
+      let headsList = newHeads.toList();
+      let dirsList = newDirs.toList();
+
+      // Step 3-6: check collisions and build alive/dead status
+      let aliveBuilder = new ListBuilder<Boolean>();
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        if (!(snake.status is Alive)) {
+          aliveBuilder.add(false);
+        } else {
+          let nh = headsList.getOr(i, new Point(-1, -1));
+          var dead = false;
+          // Wall collision
+          if (nh.x < 0 || nh.x >= game.width || nh.y < 0 || nh.y >= game.height) {
+            dead = true;
+          }
+          // Self collision
+          if (!dead) {
+            for (var s = 0; s < snake.segments.length - 1; ++s) {
+              if (pointEquals(nh, snake.segments.getOr(s, new Point(-2, -2)))) {
+                dead = true;
+              }
+            }
+          }
+          // Head-to-body collision with other snakes
+          if (!dead) {
+            for (var j = 0; j < game.snakes.length; ++j) {
+              if (j != i) {
+                let other = game.snakes.getOr(j, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+                if (other.status is Alive) {
+                  for (var s = 0; s < other.segments.length - 1; ++s) {
+                    if (pointEquals(nh, other.segments.getOr(s, new Point(-2, -2)))) {
+                      dead = true;
+                    }
+                  }
+                }
+              }
+            }
+          }
+          // Head-to-head collision
+          if (!dead) {
+            for (var j = 0; j < game.snakes.length; ++j) {
+              if (j != i) {
+                let otherSnake = game.snakes.getOr(j, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+                if (otherSnake.status is Alive) {
+                  let otherHead = headsList.getOr(j, new Point(-3, -3));
+                  if (pointEquals(nh, otherHead)) {
+                    dead = true;
+                  }
+                }
+              }
+            }
+          }
+          aliveBuilder.add(!dead);
+        }
+      }
+      let aliveList = aliveBuilder.toList();
+
+      // Step 7-8: determine eating and build new snakes
+      var eaterIndex = -1;
+      for (var i = 0; i < game.snakes.length; ++i) {
+        if (aliveList.getOr(i, false)) {
+          let nh = headsList.getOr(i, new Point(-1, -1));
+          if (pointEquals(nh, game.food)) {
+            eaterIndex = i;
+          }
+        }
+      }
+
+      let resultSnakes = new ListBuilder<PlayerSnake>();
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        if (!(snake.status is Alive)) {
+          resultSnakes.add(snake);
+        } else if (!aliveList.getOr(i, false)) {
+          resultSnakes.add(new PlayerSnake(
+            snake.id, snake.segments, snake.direction,
+            snake.score, new Dead(),
+          ));
+        } else {
+          let nh = headsList.getOr(i, new Point(0, 0));
+          let dir = dirsList.getOr(i, snake.direction);
+          let isEating = i == eaterIndex;
+          let keepLen = if (isEating) { snake.segments.length } else { snake.segments.length - 1 };
+          let newSegs = new ListBuilder<Point>();
+          newSegs.add(nh);
+          for (var s = 0; s < keepLen; ++s) {
+            newSegs.add(snake.segments.getOr(s, new Point(0, 0)));
+          }
+          let newScore = if (isEating) { snake.score + 1 } else { snake.score };
+          resultSnakes.add(new PlayerSnake(
+            snake.id, newSegs.toList(), dir,
+            newScore, new Alive(),
+          ));
+        }
+      }
+
+      // Step 9: place new food if eaten
+      let resultSnakesList = resultSnakes.toList();
+      var newFood = game.food;
+      var newSeed = game.rngSeed;
+      if (eaterIndex >= 0) {
+        let allSegs = collectAllSegments(resultSnakesList);
+        let foodResult = placeFood(allSegs, game.width, game.height, game.rngSeed);
+        newFood = foodResult.point;
+        newSeed = foodResult.seed;
+      }
+
+      new MultiSnakeGame(
+        game.width, game.height, resultSnakesList,
+        newFood, newSeed, game.tickCount + 1,
+      )
+    }
+
+## Change Player Direction
+
+    export let changePlayerDirection(
+      game: MultiSnakeGame, playerId: Int, dir: Direction,
+    ): MultiSnakeGame {
+      let newSnakes = new ListBuilder<PlayerSnake>();
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        if (snake.id == playerId && snake.status is Alive && !isOpposite(snake.direction, dir)) {
+          newSnakes.add(new PlayerSnake(
+            snake.id, snake.segments, dir, snake.score, snake.status,
+          ));
+        } else {
+          newSnakes.add(snake);
+        }
+      }
+      new MultiSnakeGame(
+        game.width, game.height, newSnakes.toList(),
+        game.food, game.rngSeed, game.tickCount,
+      )
+    }
+
+## Game Over Check
+
+    export let isMultiGameOver(game: MultiSnakeGame): Boolean {
+      var aliveCount = 0;
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        if (snake.status is Alive) {
+          aliveCount = aliveCount + 1;
+        }
+      }
+      if (game.snakes.length <= 1) {
+        aliveCount == 0
+      } else {
+        aliveCount <= 1
+      }
+    }
+
+## Add Player
+
+    export let addPlayer(game: MultiSnakeGame, seed: Int): MultiSnakeGame {
+      let newId = game.snakes.length;
+      let spawn = spawnPosition(game.width, game.height, newId, newId + 1);
+      let dir = spawn.direction;
+      let delta = directionDelta(dir);
+      let startX = spawn.point.x;
+      let startY = spawn.point.y;
+      let segments: List<Point> = [
+        new Point(startX, startY),
+        new Point(startX - delta.x, startY - delta.y),
+        new Point(startX - delta.x * 2, startY - delta.y * 2),
+      ];
+      let newSnake = new PlayerSnake(newId, segments, dir, 0, new Alive());
+      let builder = new ListBuilder<PlayerSnake>();
+      for (var i = 0; i < game.snakes.length; ++i) {
+        builder.add(game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead())));
+      }
+      builder.add(newSnake);
+      let allSegs = collectAllSegments(builder.toList());
+      let foodResult = placeFood(allSegs, game.width, game.height, seed);
+      new MultiSnakeGame(
+        game.width, game.height, builder.toList(),
+        foodResult.point, foodResult.seed, game.tickCount,
+      )
+    }
+
+## Remove Player
+
+    export let removePlayer(game: MultiSnakeGame, playerId: Int): MultiSnakeGame {
+      let builder = new ListBuilder<PlayerSnake>();
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        if (snake.id != playerId) {
+          builder.add(snake);
+        }
+      }
+      new MultiSnakeGame(
+        game.width, game.height, builder.toList(),
+        game.food, game.rngSeed, game.tickCount,
+      )
+    }
+
+## Multi-Player Render
+
+    export let multiRender(game: MultiSnakeGame): String {
+      let sb = new StringBuilder();
+      sb.append("\u001b[2J\u001b[H");
+
+      // Top border
+      sb.append("#");
+      for (var x = 0; x < game.width; ++x) { sb.append("#"); }
+      sb.append("#\r\n");
+
+      // Board rows
+      for (var y = 0; y < game.height; ++y) {
+        sb.append("#");
+        for (var x = 0; x < game.width; ++x) {
+          let p = new Point(x, y);
+          sb.append(multiCellChar(game, p));
+        }
+        sb.append("#\r\n");
+      }
+
+      // Bottom border
+      sb.append("#");
+      for (var x = 0; x < game.width; ++x) { sb.append("#"); }
+      sb.append("#\r\n");
+
+      // Score line per player
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        let statusText = when (snake.status) {
+          is Alive -> "Playing";
+          is Dead -> "DEAD";
+          else -> "";
+        };
+        let symbol = playerHeadChar(snake.id);
+        sb.append("P${snake.id.toString()} ${symbol}: ${snake.score.toString()}  ${statusText}\r\n");
+      }
+
+      sb.toString()
+    }
+
+    export let playerHeadChar(id: Int): String {
+      if (id == 0) {
+        "@"
+      } else if (id == 1) {
+        "#"
+      } else if (id == 2) {
+        "$"
+      } else if (id == 3) {
+        "%"
+      } else {
+        "&"
+      }
+    }
+
+    export let playerBodyChar(id: Int): String {
+      if (id == 0) {
+        "o"
+      } else if (id == 1) {
+        "+"
+      } else if (id == 2) {
+        "~"
+      } else if (id == 3) {
+        "="
+      } else {
+        "."
+      }
+    }
+
+    let multiCellChar(game: MultiSnakeGame, p: Point): String {
+      // Check heads first
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        if (snake.segments.length > 0) {
+          let head = snake.segments.getOr(0, new Point(-1, -1));
+          if (pointEquals(p, head)) {
+            return playerHeadChar(snake.id);
+          }
+        }
+      }
+      // Check bodies
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        for (var j = 1; j < snake.segments.length; ++j) {
+          if (pointEquals(p, snake.segments.getOr(j, new Point(-1, -1)))) {
+            return playerBodyChar(snake.id);
+          }
+        }
+      }
+      if (pointEquals(p, game.food)) {
+        return "*";
+      }
+      " "
+    }
+
+## Direction Serialization
+
+    export let directionToString(dir: Direction): String {
+      when (dir) {
+        is Up -> "up";
+        is Down -> "down";
+        is Left -> "left";
+        is Right -> "right";
+        else -> "right";
+      }
+    }
+
+    export let stringToDirection(s: String): Direction? {
+      if (s == "up") {
+        return new Up();
+      }
+      if (s == "down") {
+        return new Down();
+      }
+      if (s == "left") {
+        return new Left();
+      }
+      if (s == "right") {
+        return new Right();
+      }
+      null
+    }
 
