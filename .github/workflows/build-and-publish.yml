@@ -34,7 +34,11 @@ jobs:
         run: |
           cd /tmp/temper
           ./gradlew cli:installDist --no-daemon
-          echo "/tmp/temper/cli/build/install/temper/bin" >> $GITHUB_PATH
+          # Copy just the CLI distribution to an isolated location
+          # so temper doesn't scan test resources in the source tree
+          cp -r cli/build/install/temper /opt/temper
+          rm -rf /tmp/temper
+          echo "/opt/temper/bin" >> $GITHUB_PATH
 
       - name: Build snake for all backends
         run: temper build
