@@ -100,11 +100,8 @@ and broadcasts rendered frames to all connected players.
           // Broadcast rendered frame
           let frame = multiRender(game);
           let conns = wsConns.toList();
-          for (var ci = 0; ci < conns.length; ++ci) {
-            do {
-              let conn = conns.get(ci);
-              await wsSend(conn, frame);
-            } orelse void;
+          for (let conn of conns) {
+            do { wsSend(conn, frame) } orelse void;
           }
 
           // No game-over reset — dead snakes stay on the board
