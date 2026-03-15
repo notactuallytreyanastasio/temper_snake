@@ -48,7 +48,7 @@ The std config gains the import:
 + import("./io");
 ```
 
-19 files changed, 254 insertions. What follows is every one of them.
+The initial commit changed 19 files with 254 insertions. Follow-up fixes for backend-specific issues (Lua coroutine scheduler, Rust dependency detection, Java timeout, C# framework update) added 13 more files with 304 insertions. What follows is every change.
 
 ---
 
@@ -507,7 +507,7 @@ This game requires `sleep()` and `readLine()`, which do not exist in the release
 git clone https://github.com/temperlang/temper.git
 cd temper
 git checkout do-crimes-to-play-snake
-./gradlew cli:build
+./gradlew installDist
 ```
 
 The Temper CLI will be at `cli/build/install/temper/bin/temper`. Add it to your `PATH` or use the full path in subsequent commands.
@@ -516,7 +516,12 @@ The Temper CLI will be at `cli/build/install/temper/bin/temper`. Add it to your 
 
 ```bash
 cd /path/to/snake
-temper build -b js    # or: -b lua, -b rust, -b py
+temper build -b js
+temper build -b py
+temper build -b lua
+temper build -b rust
+temper build -b csharp
+temper build -b java
 ```
 
 ## Running
@@ -558,7 +563,7 @@ temper test -b js
 
 ## Controls
 
-w/a/s/d and Enter. The snake starts going right. Do not go left.
+w/a/s/d keys. No Enter needed — all backends use raw terminal mode for single-keypress input. The snake starts going right. Do not go left.
 
 ## Published Versions
 
@@ -595,6 +600,8 @@ TEMPER_REFERENCE.md      — language quick reference
 
 ## Summary
 
-To play snake, we added `sleep()` and `readLine()` to a programming language. This required changes to a Kotlin compiler, a JavaScript runtime, a Python runtime, a Lua runtime, a Rust runtime, a Java runtime, and a C# runtime. 19 files across 6 backends. 254 lines of insertion for two functions that most languages ship with.
+To play snake, we added `sleep()` and `readLine()` to a programming language. This required changes to a Kotlin compiler, a JavaScript runtime, a Python runtime, a Lua runtime, a Rust runtime, a Java runtime, and a C# runtime. Then we discovered that adding I/O primitives was only half the battle — each backend had its own way of breaking: Lua's `async {}` compiled to a no-op, Rust's dependency detection missed connected functions, Java killed programs after 10 seconds, and C#'s type names collided with .NET 10.
+
+32 files changed across 6 backends. 558 lines of insertion for two functions that most languages ship with. Plus a cooperative coroutine scheduler for Lua because Lua doesn't have threads.
 
 The snake game itself is about 300 lines.
