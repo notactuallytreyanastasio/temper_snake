@@ -89,16 +89,71 @@ It has an event loop.
 Everything I needed was right there.
 
 The JS backend has an "auto-connected" pattern where you just add the key name to a list and it maps to an exported function with the same name.
-Two lines in `JsSupportNetwork.kt`, one file registration in `JsBackend.kt`, one export line, and the runtime:
+
+**`JsSupportNetwork.kt`** — register the keys:
+
+```diff
+     "String::toInt32",
+     "String::toInt64",
+     "StringBuilder::appendCodePoint",
++    // std/io
++    "stdSleep",
++    "stdReadLine",
+     // std/net
+     "stdNetSend",
+```
+
+**`JsBackend.kt`** — register the resource file:
+
+```diff
+             filePath("deque.js"),
+             filePath("float.js"),
+             filePath("interface.js"),
++            filePath("io.js"),
+             filePath("listed.js"),
+```
+
+**`temper-core/index.js`** — export the module:
+
+```diff
+ export * from "./interface.js";
+ export * from "./listed.js";
+ export * from "./mapped.js";
++export * from "./io.js";
+ export * from "./net.js";
+```
+
+**`temper-core/io.js`** — the runtime:
 
 ```javascript
+import { empty } from "./core.js";
+
 export function stdSleep(ms) {
   return new Promise(resolve => setTimeout(() => resolve(empty()), ms));
 }
+
+export function stdReadLine() {
+  return new Promise(resolve => {
+    if (typeof process !== 'undefined' && process.stdin) {
+      process.stdin.resume();
+      process.stdin.setEncoding('utf8');
+      if (process.stdin.isTTY && process.stdin.setRawMode) {
+        process.stdin.setRawMode(true);
+      }
+      process.stdin.once('data', data => {
+        const str = data.toString();
+        if (str === '\x03') { process.exit(); }
+        resolve(str.trim());
+      });
+    } else {
+      resolve(null);
+    }
+  });
+}
 ```
 
-Three lines of meaningful code.
-`stdReadLine` listens on `process.stdin` with raw mode for single-keypress input.
+Three lines of meaningful code for sleep.
+`stdReadLine` listens on `process.stdin` with raw mode for single-keypress input, with manual Ctrl+C detection because raw mode bypasses the default signal handler.
 I was done with this one in about twenty minutes.
 
 ## Python
@@ -112,15 +167,58 @@ Without it, the main thread exits immediately and the worker threads running the
 The process would start, launch two coroutines, and then exit before either of them did anything.
 A standard Python async experience.
 
-Two entries in `PySupportNetwork.kt`, about 30 lines of runtime code.
+**`PySupportNetwork.kt`** — register as `PySeparateCode` pointing to runtime functions:
+
+```diff
+ val StdNetSend = PySeparateCode("std_net_send", RUNTIME)
++val StdSleep = PySeparateCode("std_sleep", RUNTIME)
++val StdReadLine = PySeparateCode("std_read_line", RUNTIME)
+```
+
+```diff
+     "stdNetSend" to StdNetSend,
++    "stdSleep" to StdSleep,
++    "stdReadLine" to StdReadLine,
+ )
+```
+
+**`temper_core/__init__.py`** — the runtime:
 
 ```python
+import time as _time
+
 def std_sleep(ms: int) -> 'Future[None]':
     f: Future[None] = new_unbound_promise()
     def _do_sleep():
         _time.sleep(ms / 1000.0)
         f.set_result(None)
     _executor.submit(_do_sleep)
+    return f
+
+def std_read_line() -> 'Future[Optional[str]]':
+    f: 'Future[Optional[str]]' = new_unbound_promise()
+    def _do_read():
+        try:
+            if _sys.stdin.isatty():
+                import tty as _tty, termios as _termios
+                fd = _sys.stdin.fileno()
+                old_settings = _termios.tcgetattr(fd)
+                try:
+                    _tty.setraw(fd)
+                    ch = _sys.stdin.read(1)
+                    if ch == '\x03':
+                        _termios.tcsetattr(fd, _termios.TCSADRAIN, old_settings)
+                        import os as _os
+                        _os.kill(_os.getpid(), 2)
+                    f.set_result(ch)
+                finally:
+                    _termios.tcsetattr(fd, _termios.TCSADRAIN, old_settings)
+            else:
+                line = input()
+                f.set_result(line)
+        except EOFError:
+            f.set_result(None)
+    _executor.submit(_do_read)
     return f
 ```
 
@@ -188,9 +286,24 @@ When nothing is ready, sleep 10ms to avoid melting the CPU.
 
 The compiler also needed changes.
 
-`LuaSupportNetwork.kt` had to map `BuiltinOperatorId.Async` to `"async_launch"` instead of `"TODO"`.
+**`LuaSupportNetwork.kt`** — map the Async operator:
 
-`LuaTranslator.kt` had to emit `temper.run_scheduler()` after all top-level code to actually start the scheduler.
+```diff
+-    BuiltinOperatorId.Async -> "TODO" // TODO
++    BuiltinOperatorId.Async -> "async_launch"
+```
+
+**`LuaTranslator.kt`** — emit the scheduler call after all top-level code:
+
+```kotlin
+// Run the cooperative scheduler if any async blocks were registered.
+add(Lua.CallStmt(pos, Lua.FunctionCallExpr(
+    pos,
+    Lua.DotIndexExpr(pos, Lua.Name(pos, name("temper")),
+                          Lua.Name(pos, name("run_scheduler"))),
+    Lua.Args(pos, Lua.Exprs(pos, listOf())),
+)))
+```
 
 This is what it took to make Lua wait 200 milliseconds.
 
@@ -201,6 +314,47 @@ It also has a custom async runtime in the Temper core library — not tokio, a h
 The pattern for connected functions was already established by `stdNetSend`: create a `PromiseBuilder`, spawn a generator on another thread via `run_async()`, complete the promise from the worker.
 Sleep spawns a thread that calls `thread::sleep`.
 ReadLine spawns a thread that reads stdin with raw terminal mode via `libc::tcgetattr`/`tcsetattr`.
+
+**`RustSupportNetwork.kt`** — register with full crate paths for cross-crate calls:
+
+```diff
+ private val netSend = FunctionCall("stdNetSend", "send_request", cloneEvenIfFirst = true)
++private val stdSleep = FunctionCall("stdSleep", "temper_std::io::std_sleep")
++private val stdReadLine = FunctionCall("stdReadLine", "temper_std::io::std_read_line")
+```
+
+**`RustBackend.kt`** — add `"io"` to the support needers set and Cargo features:
+
+```diff
+-val stdSupportNeeders = setOf("net", "regex", "temporal")
++val stdSupportNeeders = setOf("io", "net", "regex", "temporal")
+```
+
+```diff
+ append("[features]\n")
++append("io = []\n")
+ append("net = [\"ureq\"]\n")
+```
+
+The `io` feature has no external dependencies — just std library.
+
+**`std/io/support.rs`** — the runtime:
+
+```rust
+pub fn std_sleep(ms: i32) -> Promise<()> {
+    let pb = PromiseBuilder::new();
+    let promise = pb.promise();
+    crate::run_async(Arc::new(move || {
+        let pb = pb.clone();
+        SafeGenerator::from_fn(Arc::new(move |_generator: SafeGenerator<()>| {
+            std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+            pb.complete(());
+            None
+        }))
+    }));
+    promise
+}
+```
 
 The implementation was clean.
 The build system was not.
@@ -218,9 +372,33 @@ Cargo said no.
 The game did not compile.
 
 The fix was to add a second dependency-detection pass.
-`RustTranslator` now tracks a set called `usedSupportFunctionPaths`.
-When `translateCallExpressionForSupportCode` processes a `FunctionCall`, it records the function path.
-After translation, `RustBackend` scans these paths for anything starting with `temper_std::`, extracts the module name, and injects `temper-std` as a dependency with the appropriate Cargo features.
+
+**`RustTranslator.kt`** — track connected function paths:
+
+```diff
++val usedSupportFunctionPaths = mutableSetOf<String>()
+```
+
+```diff
++// Track external crate references from connected functions.
++if (supportCode is FunctionCall) {
++    usedSupportFunctionPaths.add(supportCode.functionName)
++}
+```
+
+**`RustBackend.kt`** — scan for `temper_std::*` after translation and inject the dependency:
+
+```kotlin
+val usedStdModules = allUsedSupportPaths
+    .filter { it.startsWith("$stdCrateName::") }
+    .mapNotNull { it.split("::").getOrNull(1) }
+    .filter { it in stdFeatures }
+    .toSet()
+if (usedStdModules.isNotEmpty()) {
+    // ... inject temper-std dep with correct features
+}
+```
+
 This also fixed the missing `temper_std::init()` call in the generated `lib.rs`, which was causing a panic at runtime because the std crate's config was never initialized.
 
 Three Kotlin files changed to make Rust's build system aware of dependencies that the compiler's own import resolution had optimized away.
@@ -229,6 +407,49 @@ I find this very funny.
 ## Java
 
 Java maps Temper Promises to `CompletableFuture<T>`.
+
+**`StandardNames.kt`** — register qualified names:
+
+```diff
++// std/io
++val temperStdSleep = temperCore.qualifyKnownSafe("stdSleep")
++val temperStdReadLine = temperCore.qualifyKnownSafe("stdReadLine")
+```
+
+**`JavaSupportNetwork.kt`** — add `separateCode` entries:
+
+```diff
++// std/io support
++val JavaLang.stdSleep by receiver { separateCode(temperStdSleep) }
++val JavaLang.stdReadLine by receiver { separateCode(temperStdReadLine) }
+```
+
+```diff
+     "stdNetSend" to { it.netCoreStdNetSend },
++    "stdSleep" to { it.stdSleep },
++    "stdReadLine" to { it.stdReadLine },
+ )
+```
+
+**`Core.java`** — the runtime:
+
+```java
+@SuppressWarnings("unchecked")
+public static CompletableFuture<Optional<? super Object>> stdSleep(int ms) {
+    CompletableFuture<Optional<? super Object>> future = new CompletableFuture<>();
+    ForkJoinPool.commonPool().execute(() -> {
+        try {
+            Thread.sleep(ms);
+            future.complete(Optional.empty());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            future.completeExceptionally(e);
+        }
+    });
+    return future;
+}
+```
+
 Sleep submits `Thread.sleep(ms)` to `ForkJoinPool.commonPool()`.
 ReadLine uses `stty raw -echo` via `ProcessBuilder` for single-keypress input.
 
@@ -259,9 +480,46 @@ I briefly considered filing a bug report titled "ten seconds of snake is not eno
 ## C#
 
 C# has native `async`/`await`.
-The sleep implementation is `await Task.Delay(ms)`.
-Three lines of meaningful code.
 It is the most natural fit of any backend and required the least thought.
+
+**`CSharpSupportNetwork.kt`** — add `StaticCall` entries:
+
+```diff
++private val stdSleep = StaticCall(
++    "stdSleep",
++    StandardNames.temperStdIoStdSleep,
++)
++
++private val stdReadLine = StaticCall(
++    "stdReadLine",
++    StandardNames.temperStdIoStdReadLine,
++)
+```
+
+**`std/Io/IoSupport.cs`** — the runtime:
+
+```csharp
+public static async Task<Tuple<object?>> StdSleep(int ms)
+{
+    await Task.Delay(ms);
+    return Tuple.Create<object?>(null);
+}
+
+public static async Task<string?> StdReadLine()
+{
+    return await Task.Run(() =>
+    {
+        if (Console.IsInputRedirected) { return Console.ReadLine(); }
+        var key = Console.ReadKey(true);
+        if (key.Key == ConsoleKey.C && key.Modifiers.HasFlag(ConsoleModifiers.Control))
+            Environment.Exit(1);
+        return key.KeyChar.ToString();
+    });
+}
+```
+
+Three lines of meaningful code for sleep.
+The return type is `Task<Tuple<object?>>` because C# maps Temper's `Empty` to `System.Tuple` through the connected types system.
 
 It broke in two completely unrelated ways.
 
@@ -343,28 +601,90 @@ CI publishes standalone repos for all six backends:
 | C# | [snake-csharp](https://github.com/notactuallytreyanastasio/snake-csharp) | `dotnet run --project snake-game` |
 | Java | [snake-java](https://github.com/notactuallytreyanastasio/snake-java) | `bash run.sh` |
 
-Every push to this repo triggers a GitHub Actions pipeline that checks out the compiler branch, builds it from source, compiles the game for all 6 backends, runs 18 tests, and publishes to the target repos via SSH deploy keys.
-The output stays in sync automatically.
+Every push to this repo triggers a GitHub Actions pipeline that checks out the [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake) compiler branch, builds it from source with `./gradlew installDist`, compiles the game for all 6 backends, runs 18 tests, and if they pass, publishes the compiled output to the 6 target repositories via SSH deploy keys.
+The compiled output stays in sync automatically.
+You clone one repo, run one command, and you're playing snake.
 
-If you want to build everything yourself:
+Each target repo's README explains exactly what had to change in the Temper compiler to make that specific backend work.
+The Lua one is the most interesting.
+
+Source + CI: [temper_snake](https://github.com/notactuallytreyanastasio/temper_snake)
+
+## Building It Yourself
+
+If you want to build everything from source instead of using the published repos, you will need:
+
+- JDK 21 (to build the Temper compiler, which is written in Kotlin)
+- Node.js 18+ (for the JS backend)
+- Python 3.11+ (for the Python backend)
+- Lua 5.1 or 5.4 (for the Lua backend)
+- Rust 1.71+ with Cargo (for the Rust backend)
+- .NET 8.0+ SDK (for the C# backend)
+- Java 17+ with Maven (for the Java backend)
+
+You do not need all of them.
+Pick a backend.
+
+Here is how to build and run each one:
 
 ```bash
 # Build the compiler
 git clone https://github.com/temperlang/temper.git
 cd temper && git checkout do-crimes-to-play-snake
 ./gradlew installDist
-# Put cli/build/install/temper/bin/temper on your PATH
+# The CLI is at cli/build/install/temper/bin/temper — add it to your PATH
 
-# Build the game
-cd /path/to/snake
-temper build -b js      # or py, lua, rust, csharp, java
-
-# Run it
-node temper.out/js/snake-game/index.js
+# Clone and build the game
+git clone https://github.com/notactuallytreyanastasio/temper_snake.git
+cd temper_snake
+temper build -b js
+temper build -b py
+temper build -b lua
+temper build -b rust
+temper build -b csharp
+temper build -b java
 ```
 
-Controls are w/a/s/d.
-No Enter key.
+Then run whichever backend you like:
+
+```bash
+# JavaScript
+node temper.out/js/snake-game/index.js
+
+# Python
+cd temper.out/py
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ./temper-core -e ./std -e ./snake -e ./snake-game
+python -c "from temper_core import init_simple_logging, await_safe_to_exit; init_simple_logging(); from snake_game import snake_game; await_safe_to_exit()"
+
+# Lua
+cd temper.out/lua && lua snake-game/init.lua
+
+# Rust
+cd temper.out/rust/snake-game && cargo run
+
+# C#
+dotnet run --project temper.out/csharp/snake-game/program/
+
+# Java
+mvn -f temper.out/java/temper-core/pom.xml install -Dgpg.skip=true -DskipTests -q
+mvn -f temper.out/java/snake/pom.xml install -Dgpg.skip=true -DskipTests -q
+mvn -f temper.out/java/snake-game/pom.xml compile exec:java@snake_game.SnakeGameMain -Dgpg.skip=true -q
+```
+
+## Tests
+
+```bash
+temper test -b js
+```
+
+18 tests.
+They pass.
+
+## Controls
+
+w/a/s/d keys.
+No Enter needed — all backends use raw terminal mode for single-keypress input.
 The snake starts going right.
 
 For some reason, with the Rust version, you have to hit a button for it to start.
