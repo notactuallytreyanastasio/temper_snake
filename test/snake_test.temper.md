@@ -1,9 +1,14 @@
 # Snake Tests
 
     let {
-      Point, Up, Down, Left, Right, Playing, GameOver, SnakeGame,
+      Point, Direction, Up, Down, Left, Right, Playing, GameOver, SnakeGame,
       pointEquals, isOpposite, directionDelta, nextRandom,
       newGame, changeDirection, tick,
+      Alive, Dead, PlayerSnake, MultiSnakeGame,
+      newMultiGame, multiTick, multiRender,
+      changePlayerDirection, isMultiGameOver,
+      addPlayer, removePlayer,
+      directionToString, stringToDirection,
     } = import("snake");
 
     test("initial state has snake near center") {
@@ -133,4 +138,117 @@
       game = tick(game);
       let head2 = game.snake.getOr(0, new Point(-1, -1));
       assert(pointEquals(head1, head2)) { "snake should not move after game over" }
+    }
+
+    // ============ Multi-Snake Tests ============
+
+    test("multi game creates correct number of snakes") {
+      let game = newMultiGame(20, 10, 2, 42);
+      assert(game.snakes.length == 2) { "should have 2 snakes" }
+    }
+
+    test("multi game snakes start alive") {
+      let game = newMultiGame(20, 10, 2, 42);
+      let s0 = game.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      let s1 = game.snakes.getOr(1, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      assert(s0.status is Alive) { "player 0 should be alive" }
+      assert(s1.status is Alive) { "player 1 should be alive" }
+    }
+
+    test("multi game snakes start at different positions") {
+      let game = newMultiGame(20, 10, 2, 42);
+      let s0 = game.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      let s1 = game.snakes.getOr(1, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      let h0 = s0.segments.getOr(0, new Point(-1, -1));
+      let h1 = s1.segments.getOr(0, new Point(-1, -1));
+      assert(!pointEquals(h0, h1)) { "snakes should start at different positions" }
+    }
+
+    test("multi game snakes have 3 segments each") {
+      let game = newMultiGame(20, 10, 2, 42);
+      let s0 = game.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      let s1 = game.snakes.getOr(1, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      assert(s0.segments.length == 3) { "player 0 should have 3 segments" }
+      assert(s1.segments.length == 3) { "player 1 should have 3 segments" }
+    }
+
+    test("multi tick moves both snakes") {
+      let game = newMultiGame(20, 10, 2, 42);
+      let h0Before = game.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead())).segments.getOr(0, new Point(0, 0));
+      let h1Before = game.snakes.getOr(1, new PlayerSnake(0, [], new Right(), 0, new Dead())).segments.getOr(0, new Point(0, 0));
+      let dirs: List<Direction> = [new Right(), new Left()];
+      let after = multiTick(game, dirs);
+      let h0After = after.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead())).segments.getOr(0, new Point(0, 0));
+      let h1After = after.snakes.getOr(1, new PlayerSnake(0, [], new Right(), 0, new Dead())).segments.getOr(0, new Point(0, 0));
+      assert(!pointEquals(h0Before, h0After)) { "snake 0 should have moved" }
+      assert(!pointEquals(h1Before, h1After)) { "snake 1 should have moved" }
+    }
+
+    test("multi wall collision kills one snake") {
+      // Create a game with one snake near the right wall
+      var game = newMultiGame(20, 10, 2, 42);
+      // Tick until snake 0 hits the wall (it faces right from ~x=5)
+      let dirs: List<Direction> = [new Right(), new Left()];
+      for (var i = 0; i < 20; ++i) {
+        game = multiTick(game, dirs);
+      }
+      // At least one snake should be dead after hitting a wall
+      var deadCount = 0;
+      for (var i = 0; i < game.snakes.length; ++i) {
+        let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+        if (snake.status is Dead) {
+          deadCount = deadCount + 1;
+        }
+      }
+      assert(deadCount > 0) { "at least one snake should be dead after 20 ticks toward walls" }
+    }
+
+    test("multi game over when one player left") {
+      var game = newMultiGame(20, 10, 2, 42);
+      let dirs: List<Direction> = [new Right(), new Left()];
+      // Tick many times until game is over
+      for (var i = 0; i < 30; ++i) {
+        game = multiTick(game, dirs);
+      }
+      assert(isMultiGameOver(game)) { "game should be over after enough ticks" }
+    }
+
+    test("changePlayerDirection works") {
+      let game = newMultiGame(20, 10, 2, 42);
+      let changed = changePlayerDirection(game, 0, new Up());
+      let s0 = changed.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      assert(s0.direction is Up) { "player 0 direction should be Up" }
+    }
+
+    test("changePlayerDirection rejects opposite") {
+      let game = newMultiGame(20, 10, 2, 42);
+      // Player 0 starts facing Right, so Left is opposite
+      let changed = changePlayerDirection(game, 0, new Left());
+      let s0 = changed.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      assert(s0.direction is Right) { "should reject opposite direction" }
+    }
+
+    test("addPlayer adds a new snake") {
+      let game = newMultiGame(20, 10, 2, 42);
+      let bigger = addPlayer(game, 99);
+      assert(bigger.snakes.length == 3) { "should have 3 snakes after adding" }
+    }
+
+    test("removePlayer removes a snake") {
+      let game = newMultiGame(20, 10, 3, 42);
+      let smaller = removePlayer(game, 1);
+      assert(smaller.snakes.length == 2) { "should have 2 snakes after removing" }
+    }
+
+    test("multiRender produces output") {
+      let game = newMultiGame(20, 10, 2, 42);
+      let rendered = multiRender(game);
+      assert(rendered != "") { "render should produce output" }
+    }
+
+    test("directionToString and stringToDirection round-trip") {
+      let d = directionToString(new Up());
+      assert(d == "up") { "Up should serialize to 'up'" }
+      let parsed = stringToDirection("down");
+      assert(parsed is Down) { "'down' should parse to Down" }
     }
