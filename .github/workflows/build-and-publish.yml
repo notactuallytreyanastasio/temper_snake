@@ -69,8 +69,8 @@ jobs:
             lang_upper: PYTHON
             repo: snake-python
             lang_name: Python
-            run_cmd: "PYTHONPATH=temper-core:snake:snake-game python3 -c \"from temper_core import init_simple_logging, await_safe_to_exit; init_simple_logging(); from snake_game import snake_game; await_safe_to_exit()\""
-            prereqs: "Python 3.8+"
+            run_cmd: "PYTHONPATH=temper-core:std:snake:snake-game python3 -c \"from temper_core import init_simple_logging, await_safe_to_exit; init_simple_logging(); from snake_game import snake_game; await_safe_to_exit()\""
+            prereqs: "Python 3.11+"
           - lang: lua
             lang_upper: LUA
             repo: snake-lua
@@ -93,7 +93,7 @@ jobs:
             lang_upper: JAVA
             repo: snake-java
             lang_name: Java
-            run_cmd: "cd snake-game && mvn compile exec:java"
+            run_cmd: "bash run.sh"
             prereqs: "Java 17+ with Maven"
 
     steps:
@@ -132,6 +132,22 @@ jobs:
           cp -r ../temper.out/${{ matrix.lang }}/* .
           # Version tracking
           echo "${{ github.sha }}" > VERSION
+
+      - name: Generate run script for Java
+        if: matrix.lang == 'java'
+        run: |
+          cat > target-repo/run.sh << 'RUNEOF'
+          #!/usr/bin/env bash
+          set -e
+          SKIP="-Dgpg.skip=true -Dmaven.javadoc.skip=true -Dmaven.source.skip=true -DskipTests -Dmaven.test.skip=true"
+          echo "Installing dependencies..."
+          mvn -f temper-core/pom.xml install $SKIP -q
+          mvn -f snake/pom.xml install $SKIP -q
+          echo "Running snake..."
+          mvn -f snake-game/pom.xml compile exec:java@snake_game.SnakeGameMain $SKIP -q
+          RUNEOF
+          sed -i 's/^          //' target-repo/run.sh
+          chmod +x target-repo/run.sh
 
       - name: Generate README
         run: |
