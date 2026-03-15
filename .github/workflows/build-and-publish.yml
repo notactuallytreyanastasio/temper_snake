@@ -151,10 +151,85 @@ jobs:
 
       - name: Generate README
         run: |
+          # Write backend-specific compiler details to a temp file
+          case "${{ matrix.lang }}" in
+            js)
+              cat > /tmp/backend_details.md << 'DETAILS'
+          The JS backend uses the "auto-connected" pattern: connected keys listed in `supportedAutoConnecteds` are automatically mapped to exported functions whose names match the key.
+
+          **Compiler changes** (`JsSupportNetwork.kt`): `"stdSleep"` and `"stdReadLine"` added to the auto-connected set.
+
+          **Runtime** (`temper-core/io.js`): `stdSleep` uses `setTimeout` wrapped in a native `Promise`. `stdReadLine` uses `process.stdin` with raw mode enabled via `setRawMode(true)` for single-keypress input without requiring Enter. Ctrl+C is detected manually since raw mode bypasses the default signal handler.
+
+          JS was the easiest backend — native Promises and a built-in event loop mean `async {}` blocks just work.
+          DETAILS
+              ;;
+            py)
+              cat > /tmp/backend_details.md << 'DETAILS'
+          Python's async model uses `concurrent.futures.Future` with a `ThreadPoolExecutor`. Connected functions run blocking I/O on worker threads and resolve futures when done.
+
+          **Compiler changes** (`PySupportNetwork.kt`): `StdSleep` and `StdReadLine` registered as `PySeparateCode` entries pointing to runtime functions.
+
+          **Runtime** (`temper_core/__init__.py`): `std_sleep` submits a `time.sleep()` call to the thread pool. `std_read_line` uses `tty.setraw()` + `termios` for single-keypress input on Unix, falling back to `input()` on non-TTY. The main thread's generator-based coroutine system picks up resolutions via `_step_async_coro`. Programs need `await_safe_to_exit()` to keep the process alive until all async tasks complete.
+          DETAILS
+              ;;
+            lua)
+              cat > /tmp/backend_details.md << 'DETAILS'
+          Lua was the hardest backend. It has no Promises, no event loop, and no threads. The initial implementation compiled `async {}` to `temper.TODO()` — a stub that created a coroutine but never ran it.
+
+          **Compiler changes:**
+          - `LuaSupportNetwork.kt`: `BuiltinOperatorId.Async` mapped from `"TODO"` to `"async_launch"`
+          - `LuaTranslator.kt`: emits `temper.run_scheduler()` after all top-level code to drive the cooperative loop
+
+          **Runtime** (`temper-core/init.lua`): A full cooperative coroutine scheduler. Three promise types (`PROMISE_SLEEP`, `PROMISE_READLINE`, `PROMISE_RESOLVED`) where `:await()` calls `coroutine.yield(self)` to hand control back to the scheduler. `stdsleep(ms)` returns a deadline-based promise instead of blocking. `stdreadline()` returns a readline promise. `run_scheduler()` runs round-robin: checks sleep deadlines against wall-clock time, polls for non-blocking input via `stty min 0 time 0`, and resumes ready coroutines. When only readline tasks remain (game over), it exits. A 10ms sleep prevents busy-spinning.
+
+          This is ~120 lines of Lua implementing what other languages get from their runtime for free.
+          DETAILS
+              ;;
+            rust)
+              cat > /tmp/backend_details.md << 'DETAILS'
+          Rust uses a custom async runtime (not tokio) based on `Promise<T>`, `PromiseBuilder<T>`, and `SafeGenerator<T>`. Each I/O operation spawns work on a separate thread and completes a promise.
+
+          **Compiler changes:**
+          - `RustSupportNetwork.kt`: `FunctionCall` entries with cross-crate paths (`"temper_std::io::std_sleep"`, `"temper_std::io::std_read_line"`)
+          - `RustBackend.kt`: `"io"` added to `stdSupportNeeders` and Cargo features. A second dependency-detection pass was added because connected functions bypass the import system — `RustTranslator` tracks `usedSupportFunctionPaths`, and `RustBackend` scans them after translation to inject the `temper-std` dependency with correct features
+          - `RustTranslator.kt`: records connected function paths in `usedSupportFunctionPaths` during `translateCallExpressionForSupportCode`
+
+          **Runtime** (`std/io/support.rs`): `std_sleep` spawns a thread that calls `thread::sleep` and completes a `PromiseBuilder`. `std_read_line` uses `libc::tcgetattr`/`tcsetattr` for raw terminal mode on Unix, reading a single byte from stdin. The `io` Cargo feature depends on `libc`.
+          DETAILS
+              ;;
+            csharp)
+              cat > /tmp/backend_details.md << 'DETAILS'
+          C# has native `async`/`await` with `Task<T>`, making this the most natural fit of any backend. Three lines of meaningful code for sleep.
+
+          **Compiler changes:**
+          - `CSharpSupportNetwork.kt`: `StaticCall` entries for `stdSleep` and `stdReadLine`
+          - `CSharpBackend.kt`: resource registration for `std/Io/IoSupport.cs`
+          - `CsProj.kt` + `.csproj` templates: target framework updated from `net6.0` to `net8.0` (current LTS)
+          - `RegexSupport.cs`: `OrderedDictionary` and `AsReadOnly` fully namespace-qualified to avoid conflicts with `System.Collections.Generic.OrderedDictionary` introduced in .NET 9+
+
+          **Runtime** (`std/Io/IoSupport.cs`): `StdSleep` is `await Task.Delay(ms)`. `StdReadLine` uses `Console.ReadKey(true)` for single-keypress input (or `Console.ReadLine()` if input is redirected). The return type is `Task<Tuple<object?>>` because Temper's `Empty` maps to `System.Tuple` through the connected types system.
+          DETAILS
+              ;;
+            java)
+              cat > /tmp/backend_details.md << 'DETAILS'
+          Java maps Temper Promises to `CompletableFuture<T>`. Blocking I/O runs on the `ForkJoinPool.commonPool()`.
+
+          **Compiler changes:**
+          - `JavaSupportNetwork.kt`: `separateCode` entries for `stdSleep` and `stdReadLine`
+          - `StandardNames.kt`: qualified names `temperStdSleep` and `temperStdReadLine`
+          - `Core.java`: `waitUntilTasksComplete()` originally had a hard 10-second timeout (`awaitQuiescence(10L, TimeUnit.SECONDS)`) that killed any program after 10 seconds. Fixed to loop until the pool is truly quiescent
+
+          **Runtime** (`Core.java`): `stdSleep` submits `Thread.sleep(ms)` to the fork-join pool. `stdReadLine` uses `stty raw -echo` via `ProcessBuilder` for single-keypress input on Unix, with Ctrl+C detection. The return type `CompletableFuture<Optional<? super Object>>` matches Temper's `Promise<Empty>` through the connected types map.
+          DETAILS
+              ;;
+          esac
+          sed -i 's/^          //' /tmp/backend_details.md
+
           cat > target-repo/README.md << 'READMEEOF'
           # Snake (${{ matrix.lang_name }})
 
-          A terminal snake game written in [${{ matrix.lang_name }}] — auto-generated from [Temper](https://temperlang.dev) source code.
+          A terminal snake game written in ${{ matrix.lang_name }} — auto-generated from [Temper](https://temperlang.dev) source code.
 
           ## How to Play
 
@@ -168,9 +243,21 @@ jobs:
 
           Use **w/a/s/d** keys to steer the snake. No Enter key needed — input is raw mode.
 
-          ## The Story
+          ## What Is This?
 
-          This code was not written by a human in ${{ matrix.lang_name }}. It was written once in [Temper](https://temperlang.dev) — a programming language that compiles to 6 other languages — and then automatically compiled and published here by CI.
+          This code was not written by a human in ${{ matrix.lang_name }}. It was written once in [Temper](https://temperlang.dev) — a programming language that compiles to JavaScript, Python, Lua, Rust, Java, and C# — and then automatically compiled to ${{ matrix.lang_name }} and published here by CI.
+
+          Temper had no way to pause execution or read input. The only I/O was `console.log()`. To play snake, we had to add `sleep(ms)` and `readLine()` to the language itself — modifying the Temper compiler across all six backends.
+
+          ## What Changed in the Temper Compiler for ${{ matrix.lang_name }}
+
+          READMEEOF
+          sed -i 's/^          //' target-repo/README.md
+          cat /tmp/backend_details.md >> target-repo/README.md
+
+          cat >> target-repo/README.md << 'READMEEOF'
+
+          ## All 6 Backends
 
           The same snake game exists in 6 languages, all generated from [one Temper source](https://github.com/notactuallytreyanastasio/temper_snake):
 
@@ -183,24 +270,15 @@ jobs:
           | C# | [snake-csharp](https://github.com/notactuallytreyanastasio/snake-csharp) |
           | Java | [snake-java](https://github.com/notactuallytreyanastasio/snake-java) |
 
-          ## How It Works
-
-          1. The game logic lives in [`temper_snake`](https://github.com/notactuallytreyanastasio/temper_snake) as `.temper.md` files
-          2. A custom Temper compiler (branch [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake)) adds `sleep()` and `readLine()` I/O primitives
-          3. GitHub Actions builds the compiler, compiles the game for all 6 backends, runs tests
-          4. If tests pass, the compiled output is automatically pushed to this repo
-
-          Every push to the source repo triggers a fresh build. This code is always in sync.
-
           ## Source
 
-          [notactuallytreyanastasio/temper_snake](https://github.com/notactuallytreyanastasio/temper_snake)
+          - Game source: [notactuallytreyanastasio/temper_snake](https://github.com/notactuallytreyanastasio/temper_snake)
+          - Compiler branch: [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake) ([PR #376](https://github.com/temperlang/temper/pull/376))
 
           ---
 
           *Auto-generated from commit [`${{ github.sha }}`](https://github.com/notactuallytreyanastasio/temper_snake/commit/${{ github.sha }})*
           READMEEOF
-          # Remove leading whitespace from heredoc
           sed -i 's/^          //' target-repo/README.md
 
       - name: Commit and push
