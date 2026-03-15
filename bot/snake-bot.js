@@ -122,6 +122,7 @@ const ws = new WebSocket(serverUrl);
 
 ws.on('open', () => {
   console.log(`   Connected to ${serverUrl}`);
+  ws.send('join');
   connected = true;
   decisionLoop(ws);
 });

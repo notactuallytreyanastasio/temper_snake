@@ -19,6 +19,7 @@ Receives and displays rendered game frames from the server.
         console.log("Snake Multiplayer Client");
         console.log("Connecting to ${serverUrl}...");
         let ws = await wsConnect(serverUrl);
+        do { await wsSend(ws, "join") } orelse void;
         console.log("Connected! Use w/a/s/d to move.");
 
         // Input loop — reads stdin, sends direction to server

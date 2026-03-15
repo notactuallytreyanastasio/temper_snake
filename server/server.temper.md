@@ -41,39 +41,60 @@ and broadcasts rendered frames to all connected players.
 
         while (running) {
           let ws = await wsAccept(server);
-          let playerId = nextId;
-          nextId = nextId + 1;
 
-          game = addPlayer(game, playerId * 7 + 13);
-          wsConns.add(ws);
+          // First message determines player vs spectator
+          let firstMsg = do { await wsRecv(ws) } orelse "";
+          if (firstMsg == "spectate") {
+            // Spectator: just add to broadcast list, no snake
+            wsConns.add(ws);
+            console.log("Spectator connected!");
+          } else {
+            // Player: add snake and process first message as direction
+            let playerId = nextId;
+            nextId = nextId + 1;
+            game = addPlayer(game, playerId * 7 + 13);
+            wsConns.add(ws);
 
-          let symbol = playerHeadChar(playerId);
-          console.log("Player ${playerId.toString()} (${symbol}) connected!");
+            let symbol = playerHeadChar(playerId);
+            console.log("Player ${playerId.toString()} (${symbol}) connected!");
 
-          // Spawn recv loop for this connection
-          let connId = playerId;
-          let connWs = ws;
-          async { (): GeneratorResult<Empty> extends GeneratorFn =>
-            do {
-              while (running) {
-                let msg = await wsRecv(connWs);
-                if (msg is String) {
-                  // Single-char direction: u/d/l/r
-                  if (msg == "u") {
-                    game = changePlayerDirection(game, connId, new Up());
-                  } else if (msg == "d") {
-                    game = changePlayerDirection(game, connId, new Down());
-                  } else if (msg == "l") {
-                    game = changePlayerDirection(game, connId, new Left());
-                  } else if (msg == "r") {
-                    game = changePlayerDirection(game, connId, new Right());
-                  }
-                } else {
-                  console.log("Player ${connId.toString()} disconnected");
-                  break;
-                }
+            // Handle the first message if it was a direction
+            if (firstMsg is String) {
+              if (firstMsg == "u") {
+                game = changePlayerDirection(game, playerId, new Up());
+              } else if (firstMsg == "d") {
+                game = changePlayerDirection(game, playerId, new Down());
+              } else if (firstMsg == "l") {
+                game = changePlayerDirection(game, playerId, new Left());
+              } else if (firstMsg == "r") {
+                game = changePlayerDirection(game, playerId, new Right());
               }
-            } orelse void;
+            }
+
+            // Spawn recv loop for this player
+            let connId = playerId;
+            let connWs = ws;
+            async { (): GeneratorResult<Empty> extends GeneratorFn =>
+              do {
+                while (running) {
+                  let msg = await wsRecv(connWs);
+                  if (msg is String) {
+                    if (msg == "u") {
+                      game = changePlayerDirection(game, connId, new Up());
+                    } else if (msg == "d") {
+                      game = changePlayerDirection(game, connId, new Down());
+                    } else if (msg == "l") {
+                      game = changePlayerDirection(game, connId, new Left());
+                    } else if (msg == "r") {
+                      game = changePlayerDirection(game, connId, new Right());
+                    }
+                  } else {
+                    console.log("Player ${connId.toString()} disconnected");
+                    break;
+                  }
+                }
+              } orelse void;
+            }
           }
         }
       } orelse void;
@@ -100,11 +121,8 @@ and broadcasts rendered frames to all connected players.
           // Broadcast rendered frame
           let frame = multiRender(game);
           let conns = wsConns.toList();
-          for (var ci = 0; ci < conns.length; ++ci) {
-            do {
-              let conn = conns.get(ci);
-              await wsSend(conn, frame);
-            } orelse void;
+          for (let conn of conns) {
+            do { wsSend(conn, frame) } orelse void;
           }
 
           // No game-over reset — dead snakes stay on the board
