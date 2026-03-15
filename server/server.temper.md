@@ -17,8 +17,13 @@ and broadcasts rendered frames to all connected players.
 
 ## Server State
 
-    let boardWidth = terminalColumns() - 10;
-    let boardHeight = terminalRows() - 10;
+    // Use terminal size if available, otherwise a large playable default.
+    // The render adds 2 border rows + score lines, so subtract some.
+    var detectedCols = terminalColumns();
+    var detectedRows = terminalRows();
+    // Default 80x24 means detection failed — use a big board instead
+    let boardWidth = if (detectedCols > 100) { detectedCols - 4 } else { 80 };
+    let boardHeight = if (detectedRows > 30) { detectedRows - 12 } else { 30 };
     var game: MultiSnakeGame = newMultiGame(boardWidth, boardHeight, 0, 42);
     var wsConns = new ListBuilder<WsConnection>();
     var nextId = 0;
@@ -78,33 +83,32 @@ and broadcasts rendered frames to all connected players.
 
     async { (): GeneratorResult<Empty> extends GeneratorFn =>
       do {
-        await sleep(2000);
+        // Wait for at least one player to connect
+        while (game.snakes.length == 0) {
+          await sleep(500);
+        }
         console.log("Game starting!");
 
         while (running) {
-          if (game.snakes.length > 0) {
-            let dirs = new ListBuilder<Direction>();
-            for (var i = 0; i < game.snakes.length; ++i) {
-              let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
-              dirs.add(snake.direction);
-            }
-            game = multiTick(game, dirs.toList());
-
-            // Broadcast rendered frame
-            let frame = multiRender(game);
-            let conns = wsConns.toList();
-            for (var ci = 0; ci < conns.length; ++ci) {
-              do {
-                let conn = conns.get(ci);
-                await wsSend(conn, frame);
-              } orelse void;
-            }
-
-            if (isMultiGameOver(game)) {
-              console.log("Game Over!");
-              running = false;
-            }
+          let dirs = new ListBuilder<Direction>();
+          for (var i = 0; i < game.snakes.length; ++i) {
+            let snake = game.snakes.getOr(i, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+            dirs.add(snake.direction);
           }
+          game = multiTick(game, dirs.toList());
+
+          // Broadcast rendered frame
+          let frame = multiRender(game);
+          let conns = wsConns.toList();
+          for (var ci = 0; ci < conns.length; ++ci) {
+            do {
+              let conn = conns.get(ci);
+              await wsSend(conn, frame);
+            } orelse void;
+          }
+
+          // No game-over reset — dead snakes stay on the board
+          // and living snakes keep playing. New players can still join.
           await sleep(200);
         }
       } orelse void;

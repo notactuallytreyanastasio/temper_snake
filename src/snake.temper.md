@@ -550,7 +550,9 @@ A simple deterministic PRNG.
           aliveCount = aliveCount + 1;
         }
       }
-      if (game.snakes.length <= 1) {
+      if (game.snakes.length == 0) {
+        false
+      } else if (game.snakes.length == 1) {
         aliveCount == 0
       } else {
         aliveCount <= 1
