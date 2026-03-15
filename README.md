@@ -780,23 +780,78 @@ The server renders the game, sends the ASCII art, the client displays it.
 
 ### Playing Multiplayer
 
+Pick any backend for the server, any backend for each client.
+They all speak the same WebSocket protocol and interoperate freely.
+
+One terminal runs the server, each additional terminal is a player.
+Use w/a/s/d to steer. Connect as many players as you want.
+
+#### JavaScript
+
 ```bash
-# Terminal 1: Start the server
-cd temper.out/js && node snake-server/index.js
+temper build -b js
+cd temper.out/js && npm install
 
-# Terminal 2: Connect as player 1
-cd temper.out/js && node snake-client/index.js
+# Server
+node snake-server/index.js
 
-# Terminal 3: Connect as player 2
-cd temper.out/js && node snake-client/index.js
+# Client (separate terminal)
+node snake-client/index.js
 ```
 
-Each client connects via WebSocket to the server on port 8080.
-The server runs the authoritative game loop at 200ms ticks and broadcasts the board to all players.
-Use w/a/s/d to steer.
+#### Rust
 
-You can connect as many players as you want.
-The board is sized to your terminal minus a margin.
+```bash
+temper build -b rust
+
+# Server
+cd temper.out/rust/snake-server && cargo run
+
+# Client (separate terminal)
+cd temper.out/rust/snake-client && cargo run
+```
+
+#### Python
+
+```bash
+temper build -b py
+cd temper.out/py
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ./temper-core -e ./std -e ./snake -e ./snake-server -e ./snake-client
+
+# Server
+python3 -c "
+from temper_core import init_simple_logging, await_safe_to_exit
+init_simple_logging()
+from snake_server import snake_server
+await_safe_to_exit()
+"
+
+# Client (separate terminal, same venv)
+python3 -c "
+from temper_core import init_simple_logging, await_safe_to_exit
+init_simple_logging()
+from snake_client import snake_client
+await_safe_to_exit()
+"
+```
+
+#### Mix and match
+
+Any server works with any client.
+A Rust server can host JS and Python clients simultaneously.
+A Python server can host Rust clients.
+The WebSocket handshake and frame encoding are identical across all three.
+
+```bash
+# Example: Rust server, one JS client, one Python client
+cd temper.out/rust/snake-server && cargo run          # Terminal 1
+cd temper.out/js && node snake-client/index.js        # Terminal 2
+python3 -c "...(snake_client)..."                     # Terminal 3
+```
+
+The server listens on port 8080.
+The board is sized to the server's terminal minus a margin.
 
 ## The Numbers
 
