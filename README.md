@@ -1,0 +1,134 @@
+# Snake
+
+A snake game written in [Temper](https://github.com/nickelsworth/temper).
+
+## The Problem
+
+Temper is a multi-backend programming language that compiles to JavaScript, Python, Lua, Rust, Java, and C#. It had types, pattern matching, sealed interfaces, immutable data structures, a test framework, and a generator-based async system. It could compute anything. It could print to the console.
+
+It could not wait.
+
+The only I/O primitive in the standard library was `console.log()`. A program could produce output, but it had no way to pause between outputs, and no way to read input. This meant that writing a game loop — the most fundamental structure in interactive programming — was not possible in pure Temper. You could write the game logic, but running it required a host-language wrapper: a Node.js script calling `setTimeout`, a Python script calling `time.sleep`, something on the outside driving the loop.
+
+We wanted to play snake. In pure Temper. On all six backends. Without wrappers.
+
+This required modifying the compiler.
+
+## Modifying the Compiler
+
+Temper's `@connected` decorator system bridges portable Temper declarations to backend-specific native implementations. A connected function has a Temper signature with a `panic()` body that the compiler replaces at compile time with a call to a native function registered in each backend's support network. The pattern has four layers: a Temper declaration, a Kotlin registration in the backend compiler, a native runtime implementation, and a resource registration in the build system.
+
+We needed two functions: `sleep(ms)` to pause execution, and `readLine()` to read user input.
+
+### `std/io` ([`0f31c89`](https://github.com/nickelsworth/temper/commit/0f31c89))
+
+This commit adds the `std/io` module to Temper's standard library. Two functions, wired across all six compilation backends. 19 files changed, 254 insertions.
+
+The Temper declarations are straightforward:
+
+```temper
+@connected("stdSleep")
+export let sleep(ms: Int): Promise<Empty> { panic() }
+
+@connected("stdReadLine")
+export let readLine(): Promise<String?> { panic() }
+```
+
+`sleep` returns `Promise<Empty>` rather than `Promise<Void>` because Temper's `await` requires the type parameter to extend `AnyValue`, and `Void` does not. This is the kind of thing you learn the hard way.
+
+The implementation varies by backend in the ways you would expect:
+
+- **JavaScript** uses `setTimeout` wrapped in a native `Promise`. `readLine` listens for `process.stdin` data events.
+- **Python** sleeps on a worker thread via `concurrent.futures.Future` and the existing `ThreadPoolExecutor`. The main thread's generator-based coroutine system picks up the resolution.
+- **Rust** spawns a thread that calls `std::thread::sleep` and completes a `PromiseBuilder`. Cross-crate calls use full paths: `temper_std::io::std_sleep`.
+- **Java** runs `Thread.sleep` on the `ForkJoinPool` and completes a `CompletableFuture<Optional<? super Object>>`. The return type is that specific because Temper's `Empty` maps to `Tuple<object?>` through the connected types system.
+- **C#** has native `async`/`await`, so it just calls `Task.Delay`. Three lines of meaningful code. The most natural fit.
+- **Lua** is the most interesting case. It has no promises, no event loop, and no async/await. The compiler translates `async { ... }` to `temper.TODO(generatorFactory)`, which was previously undefined. The commit adds a stub that creates the generator and steps it once synchronously. Sleep tries LuaSocket for sub-second precision and falls back to `os.execute("sleep ...")`. Everything runs on one thread, blocking. It works.
+
+### Functional Tests ([`c61b208`](https://github.com/nickelsworth/temper/commit/c61b208))
+
+The follow-up commit adds a functional test for `sleep()` to the compiler's test suite: sleep returns and execution continues, multiple sequential sleeps work, zero-millisecond sleep is handled, and sleep interleaves correctly with computation. It also adds raw mode support to the JS `readLine` implementation for single-keypress input.
+
+The test passes on JS, Python, Lua, Java 17, and C#. Rust is skipped because its functional tests don't link `temper-std`. Acceptable.
+
+The language can now wait. The language can now listen.
+
+## The Game
+
+With the compiler changes in place, the snake game itself is unremarkable. It is a normal snake game.
+
+### Game Logic (`src/snake.temper.md`)
+
+Everything is immutable. `SnakeGame` is a class with eight fields — width, height, snake body, direction, food position, score, status, and RNG seed. Every operation returns a new `SnakeGame` rather than mutating the existing one.
+
+Directions are a sealed interface with four cases. Points have x and y. `tick()` handles wall collision, self collision, eating, and movement. `render()` draws an ASCII board with `#` borders, `@` for the head, `o` for the body, and `*` for food. There is a deterministic PRNG for food placement so behavior is reproducible across backends.
+
+Food placement tries random positions first, then falls back to a linear scan if the random attempts all land on the snake. This matters when the snake is long. Division and modulo operators can bubble in Temper (division by zero), so they are wrapped in `do { expr } orelse 0` throughout.
+
+### The Brain (`src/brain.temper.md`)
+
+A file the user edits. It exports a `move()` function that receives the head position, body, food, board dimensions, and returns a `Direction`. The default implementation returns `new Right()`. The intent is that you replace it with your own AI.
+
+### The Runner (`game/run.temper.md`)
+
+Two async blocks sharing a mutable `inputDirection` variable:
+
+1. An input loop that calls `readLine()` in a while loop, parses w/a/s/d, and updates the shared direction.
+2. A game loop that ticks every 200ms, applies the current direction, and renders to the console.
+
+This is the code that was impossible before the compiler changes. It uses `sleep` and `readLine` from `std/io` — the module that did not exist until we needed it.
+
+### Tests (`test/snake_test.temper.md`)
+
+18 tests covering initial state, movement in all directions, direction rejection (you cannot reverse into yourself), wall collision, self collision, point equality, opposite direction detection, direction deltas, PRNG determinism, PRNG range, and post-game-over behavior. They live in a separate module to avoid `readLine` blocking during test runs.
+
+## Running
+
+Build the compiler with the `std/io` changes, then build the game:
+
+```bash
+temper build -b js    # or: -b lua, -b rust, -b py
+```
+
+Run with the backend directly (`temper run` does not trigger async blocks):
+
+```bash
+# JavaScript
+node temper.out/js/snake-game/index.js
+
+# Lua
+cd temper.out/lua && lua snake-game/init.lua
+
+# Rust
+cd temper.out/rust/snake-game && cargo run
+```
+
+Run tests:
+
+```bash
+temper test -b js
+```
+
+Use w/a/s/d and Enter to steer. The snake starts going right. Do not go left.
+
+## Project Structure
+
+```
+src/
+  config.temper.md       — library config
+  snake.temper.md        — game logic, types, PRNG, tick, render
+  brain.temper.md        — user-editable move() function
+game/
+  config.temper.md       — game runner config
+  run.temper.md          — async input loop + game loop
+test/
+  config.temper.md       — test module config
+  snake_test.temper.md   — 18 unit tests
+TEMPER_REFERENCE.md      — language quick reference
+```
+
+## Summary
+
+To play snake, we added `sleep()` and `readLine()` to a programming language. This required changes to a Kotlin compiler, a JavaScript runtime, a Python runtime, a Lua runtime, a Rust runtime, a Java runtime, and a C# runtime. 19 files across 6 backends. 254 lines of insertion for two functions that most languages ship with.
+
+The snake game itself is about 300 lines.
