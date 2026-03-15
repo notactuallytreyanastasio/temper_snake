@@ -1,0 +1,9 @@
+{
+  "name": "snake-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AI snake bots powered by local LLMs via Ollama",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
