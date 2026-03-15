@@ -1,0 +1,198 @@
+name: Build and Publish Snake to All Languages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout snake source
+        uses: actions/checkout@v4
+
+      - name: Checkout Temper compiler
+        uses: actions/checkout@v4
+        with:
+          repository: temperlang/temper
+          ref: do-crimes-to-play-snake
+          path: temper
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build Temper compiler
+        run: |
+          cd temper
+          ./gradlew cli:installDist --no-daemon
+          echo "${{ github.workspace }}/temper/cli/build/install/temper/bin" >> $GITHUB_PATH
+
+      - name: Build snake for all backends
+        run: temper build
+
+      - name: Run tests
+        run: cd test && temper test -b js
+
+      - name: Upload compiled output
+        uses: actions/upload-artifact@v4
+        with:
+          name: temper-out
+          path: temper.out/
+          retention-days: 1
+
+  publish:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - lang: js
+            lang_upper: JS
+            repo: snake-js
+            lang_name: JavaScript
+            run_cmd: "npm install && node snake-game/index.js"
+            prereqs: "Node.js 18+"
+          - lang: py
+            lang_upper: PYTHON
+            repo: snake-python
+            lang_name: Python
+            run_cmd: "PYTHONPATH=temper-core:snake:snake-game python3 -c \"from temper_core import init_simple_logging, await_safe_to_exit; init_simple_logging(); from snake_game import snake_game; await_safe_to_exit()\""
+            prereqs: "Python 3.8+"
+          - lang: lua
+            lang_upper: LUA
+            repo: snake-lua
+            lang_name: Lua
+            run_cmd: "lua snake-game/init.lua"
+            prereqs: "Lua 5.1+"
+          - lang: rust
+            lang_upper: RUST
+            repo: snake-rust
+            lang_name: Rust
+            run_cmd: "cd snake-game && cargo run"
+            prereqs: "Rust 1.71+ with Cargo"
+          - lang: csharp
+            lang_upper: CSHARP
+            repo: snake-csharp
+            lang_name: "C#"
+            run_cmd: "dotnet run --project snake-game"
+            prereqs: ".NET 8 SDK"
+          - lang: java
+            lang_upper: JAVA
+            repo: snake-java
+            lang_name: Java
+            run_cmd: "cd snake-game && mvn compile exec:java"
+            prereqs: "Java 17+ with Maven"
+
+    steps:
+      - name: Download compiled output
+        uses: actions/download-artifact@v4
+        with:
+          name: temper-out
+          path: temper.out
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets[format('DEPLOY_KEY_{0}', matrix.lang_upper)] }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          git config --global core.sshCommand "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no"
+
+      - name: Clone target repo
+        run: |
+          git clone git@github.com:notactuallytreyanastasio/${{ matrix.repo }}.git target-repo || {
+            mkdir target-repo
+            cd target-repo
+            git init
+            git remote add origin git@github.com:notactuallytreyanastasio/${{ matrix.repo }}.git
+          }
+          cd target-repo
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Sync compiled output
+        run: |
+          cd target-repo
+          # Remove old files except .git and .github
+          find . -maxdepth 1 -not -name '.git' -not -name '.github' -not -name '.' | xargs rm -rf
+          # Copy compiled output
+          cp -r ../temper.out/${{ matrix.lang }}/* .
+          # Version tracking
+          echo "${{ github.sha }}" > VERSION
+
+      - name: Generate README
+        run: |
+          cat > target-repo/README.md << 'READMEEOF'
+          # Snake (${{ matrix.lang_name }})
+
+          A terminal snake game written in [${{ matrix.lang_name }}] — auto-generated from [Temper](https://temperlang.dev) source code.
+
+          ## How to Play
+
+          **Prerequisites:** ${{ matrix.prereqs }}
+
+          ```bash
+          git clone https://github.com/notactuallytreyanastasio/${{ matrix.repo }}.git
+          cd ${{ matrix.repo }}
+          ${{ matrix.run_cmd }}
+          ```
+
+          Use **w/a/s/d** keys to steer the snake. No Enter key needed — input is raw mode.
+
+          ## The Story
+
+          This code was not written by a human in ${{ matrix.lang_name }}. It was written once in [Temper](https://temperlang.dev) — a programming language that compiles to 6 other languages — and then automatically compiled and published here by CI.
+
+          The same snake game exists in 6 languages, all generated from [one Temper source](https://github.com/notactuallytreyanastasio/temper_snake):
+
+          | Language | Repository |
+          |----------|------------|
+          | JavaScript | [snake-js](https://github.com/notactuallytreyanastasio/snake-js) |
+          | Python | [snake-python](https://github.com/notactuallytreyanastasio/snake-python) |
+          | Lua | [snake-lua](https://github.com/notactuallytreyanastasio/snake-lua) |
+          | Rust | [snake-rust](https://github.com/notactuallytreyanastasio/snake-rust) |
+          | C# | [snake-csharp](https://github.com/notactuallytreyanastasio/snake-csharp) |
+          | Java | [snake-java](https://github.com/notactuallytreyanastasio/snake-java) |
+
+          ## How It Works
+
+          1. The game logic lives in [`temper_snake`](https://github.com/notactuallytreyanastasio/temper_snake) as `.temper.md` files
+          2. A custom Temper compiler (branch [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake)) adds `sleep()` and `readLine()` I/O primitives
+          3. GitHub Actions builds the compiler, compiles the game for all 6 backends, runs tests
+          4. If tests pass, the compiled output is automatically pushed to this repo
+
+          Every push to the source repo triggers a fresh build. This code is always in sync.
+
+          ## Source
+
+          [notactuallytreyanastasio/temper_snake](https://github.com/notactuallytreyanastasio/temper_snake)
+
+          ---
+
+          *Auto-generated from commit [`${{ github.sha }}`](https://github.com/notactuallytreyanastasio/temper_snake/commit/${{ github.sha }})*
+          READMEEOF
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' target-repo/README.md
+
+      - name: Commit and push
+        run: |
+          cd target-repo
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to publish"
+          else
+            git commit -m "Update from temper_snake ${{ github.sha }}"
+            git push origin HEAD:main --force
+          fi

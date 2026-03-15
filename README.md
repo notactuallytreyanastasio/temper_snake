@@ -154,8 +154,31 @@ test/
 TEMPER_REFERENCE.md      — language quick reference
 ```
 
+## Automated Build Chain
+
+You don't have to build anything yourself. Every push to this repo triggers a GitHub Actions pipeline that:
+
+1. Checks out the [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake) branch of the Temper compiler
+2. Builds the compiler from source (JDK 21 + Gradle)
+3. Compiles the snake game for all 6 backends
+4. Runs the test suite (18 tests)
+5. If tests pass, publishes the compiled output to 6 separate repositories — one per language
+
+Each repo contains a standalone, runnable version of the game in that language. They stay in sync automatically. Every change to the Temper source here produces a fresh build across all targets.
+
+| Language | Repository | Run |
+|----------|------------|-----|
+| JavaScript | [snake-js](https://github.com/notactuallytreyanastasio/snake-js) | `node snake-game/index.js` |
+| Python | [snake-python](https://github.com/notactuallytreyanastasio/snake-python) | See repo README |
+| Lua | [snake-lua](https://github.com/notactuallytreyanastasio/snake-lua) | `lua snake-game/init.lua` |
+| Rust | [snake-rust](https://github.com/notactuallytreyanastasio/snake-rust) | `cd snake-game && cargo run` |
+| C# | [snake-csharp](https://github.com/notactuallytreyanastasio/snake-csharp) | `dotnet run --project snake-game` |
+| Java | [snake-java](https://github.com/notactuallytreyanastasio/snake-java) | See repo README |
+
+The CI uses SSH deploy keys (one per target repo) to push compiled artifacts. The build is fully automated — zero human effort to publish all 6 versions.
+
 ## Summary
 
 To play snake, we added `sleep()` and `readLine()` to a programming language. This required changes to a Kotlin compiler, a JavaScript runtime, a Python runtime, a Lua runtime, a Rust runtime, a Java runtime, and a C# runtime. 19 files across 6 backends. 254 lines of insertion for two functions that most languages ship with.
 
-The snake game itself is about 300 lines.
+The snake game itself is about 300 lines. The build chain publishes it to 6 repositories in 6 languages, all from one source.
