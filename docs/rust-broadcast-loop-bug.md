@@ -165,61 +165,106 @@ promise.on_ready(|| generator.next());
 return Some(()); // yield
 ```
 
-## Root Cause: Re-entrant `generator.next()`
+## Root Cause: `for` variable init compiled as struct field default
 
-The bug only triggers when the awaited Promise resolves **synchronously**
-— that is, when `pb.complete()` is called before the function returns.
-A `sleep(0)` does NOT trigger it because the sleep goes through
-`crate::run_async` (task queue), meaning the Promise is not yet resolved
-when `on_ready` is called. The callback is stored and fired later via
-the normal yield/resume path.
+The Rust backend compiles `for (var i = 0; ...)` by creating `i` as a
+field on the generator's closure struct with an initial value of 0:
 
-When a `@connected` function resolves its Promise synchronously (like our
-`wsSend` which does `pb.complete(())` immediately after the channel push),
-the execution flow is:
+```rust
+let mut i__8: Arc<RwLock<i32>> = Arc::new(RwLock::new(0)); // generator creation
+```
 
-1. Generator case N: call `wsSend`, store Promise, call `on_ready`
-2. `on_ready` sees Promise is already resolved → calls callback **immediately**
-3. Callback calls `generator.next()` → **re-entrant** call
-4. Inner `generator.next()` processes case N+1 (increment `i`), then N-1
-   (loop check), and continues until it hits a non-resolved await (sleep)
-5. Inner `generator.next()` yields properly
-6. **Outer** `generator.next()` returns `Some(())` (from step 1's case)
-7. The runtime thinks the generator yielded normally
+This initialization runs **once** when the generator is created. The state
+machine never re-executes `i = 0` when the enclosing loop iterates.
+After the first inner loop completes with `i = 3`, subsequent outer loop
+iterations find `i` still at 3, fail the `i < items.length` check
+immediately, and skip the inner loop entirely.
 
-The re-entrant execution in step 4 processes the loop variable increment
-and loop-back but never re-enters the initialization case (`i = 0`). On
-the next outer-loop iteration, the sleep callback resumes at the correct
-case, but `i` retains its value from the inner loop's final state.
+The same issue affects `var` declarations with initializers inside any
+loop that contains an `await` — the `var x = initial_value` is treated
+as a struct field default, not as a per-iteration assignment.
 
-A pure-Temper reproduction is not possible because all built-in async
-operations (`sleep`, `readLine`) go through the task queue and never
-resolve synchronously. The bug requires a `@connected` function that
-calls `pb.complete()` before returning.
+## Minimal Reproduction (Temper main, no dependencies)
+
+```temper
+let resolved(): Promise<Empty> {
+  let pb = new PromiseBuilder<Empty>();
+  pb.complete(empty());
+  pb.promise
+}
+
+var outerCount = 0;
+var totalLoopBodyRuns = 0;
+
+async { (): GeneratorResult<Empty> extends GeneratorFn =>
+  do {
+    let items: List<Int> = [10, 20, 30];
+    while (outerCount < 3) {
+      outerCount = outerCount + 1;
+      for (var i = 0; i < items.length; ++i) {
+        totalLoopBodyRuns = totalLoopBodyRuns + 1;
+        await resolved();
+      }
+    }
+    // JS:   "total loop body runs: 9" — PASS
+    // Rust: "total loop body runs: 3" — FAIL
+    console.log("total: ${totalLoopBodyRuns.toString()}");
+  } orelse void;
+}
+```
+
+**JS output:** `total loop body runs: 9` (3 outer × 3 inner)
+**Rust output:** `total loop body runs: 3` (inner loop only runs once)
+
+Tested on Temper `main` branch (commit `cb8c3d5`). No `std/io`, no
+WebSocket, no external dependencies. Just core Temper primitives.
+
+## Compiled Rust Evidence
+
+The compiled state machine for the for loop:
+
+```rust
+// Generator struct field — initialized ONCE at creation
+let mut i__8: Arc<RwLock<i32>> = Arc::new(RwLock::new(0));
+
+// Case 3: for loop check (NO i=0 reset here)
+3 => {
+    t___60 = ListedTrait::len(&items);
+    if !(Some(i__8) < Some(t___60)) {
+        caseIndex = 4; // exit loop
+    } else {
+        caseIndex = 5; // enter body
+    }
+}
+
+// Case 7: increment
+7 => {
+    i__8 = i__8 + 1;
+    caseIndex = 3; // back to check
+}
+```
+
+There is no `i__8 = 0` assignment in any state machine case.
 
 ## Scope
 
-This bug affects Temper code on the Rust backend when ALL of these
-conditions are met:
+This bug affects **any** `for (var i = 0; ...)` loop inside a `while`
+loop when the `for` body contains an `await`, compiled to the Rust
+backend. It is independent of:
 
-1. A `for` or `while` loop is nested inside another loop
-2. The inner loop body contains an `await` expression
-3. The awaited Promise resolves synchronously (inline `pb.complete()`)
-4. The enclosing loop also has an `await` that resolves asynchronously
+- Whether the Promise resolves synchronously or asynchronously
+- Whether the `await` is wrapped in `do { ... } orelse void`
+- What type the loop iterates over
+- Whether `@connected` functions are involved
 
-The JS backend is not affected because its `runAsync` uses `setTimeout`,
-ensuring callbacks are always deferred to the next event loop tick (no
-re-entrant execution).
+The JS backend is not affected because its generator-based async model
+handles loop variable scoping differently.
 
-The bug is in the interaction between the Temper Rust backend's
-coroutine-to-state-machine transformation (`TranslateToRegularFunction`
-strategy) and the `Promise::on_ready` mechanism that allows synchronous
-callback invocation. Fixing it requires either:
-
-- Making `on_ready` always defer callbacks (breaking synchronous resolution)
-- Ensuring the state machine re-executes loop variable initialization
-  cases when reached via re-entrant `next()` calls
-- Adding a "loop entry" marker in the state machine that resets variables
+The bug is in the Temper Rust backend's coroutine-to-state-machine
+transformation (`TranslateToRegularFunction` strategy). The compiler
+hoists `var` declarations to generator struct fields but does not emit
+re-initialization assignments at the corresponding loop entry points
+in the state machine.
 
 ## Workarounds
 
