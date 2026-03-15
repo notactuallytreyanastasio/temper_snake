@@ -20,7 +20,7 @@ jobs:
         with:
           repository: temperlang/temper
           ref: do-crimes-to-play-snake
-          path: temper
+          path: ${{ runner.temp }}/temper
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -35,9 +35,9 @@ jobs:
 
       - name: Build Temper compiler
         run: |
-          cd temper
+          cd ${{ runner.temp }}/temper
           ./gradlew cli:installDist --no-daemon
-          echo "${{ github.workspace }}/temper/cli/build/install/temper/bin" >> $GITHUB_PATH
+          echo "${{ runner.temp }}/temper/cli/build/install/temper/bin" >> $GITHUB_PATH
 
       - name: Build snake for all backends
         run: temper build
