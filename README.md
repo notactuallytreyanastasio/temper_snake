@@ -1,6 +1,6 @@
 # Snake
 
-A snake game written in [Temper](https://github.com/nickelsworth/temper).
+A snake game written in [Temper](https://github.com/temperlang/temper). Requires the [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake) branch of the Temper compiler ([PR #376](https://github.com/temperlang/temper/pull/376)).
 
 ## The Problem
 
@@ -20,7 +20,7 @@ Temper's `@connected` decorator system bridges portable Temper declarations to b
 
 We needed two functions: `sleep(ms)` to pause execution, and `readLine()` to read user input.
 
-### `std/io` ([`0f31c89`](https://github.com/nickelsworth/temper/commit/0f31c89))
+### `std/io` ([`0f31c89`](https://github.com/temperlang/temper/commit/0f31c89))
 
 This commit adds the `std/io` module to Temper's standard library. Two functions, wired across all six compilation backends. 19 files changed, 254 insertions.
 
@@ -45,7 +45,7 @@ The implementation varies by backend in the ways you would expect:
 - **C#** has native `async`/`await`, so it just calls `Task.Delay`. Three lines of meaningful code. The most natural fit.
 - **Lua** is the most interesting case. It has no promises, no event loop, and no async/await. The compiler translates `async { ... }` to `temper.TODO(generatorFactory)`, which was previously undefined. The commit adds a stub that creates the generator and steps it once synchronously. Sleep tries LuaSocket for sub-second precision and falls back to `os.execute("sleep ...")`. Everything runs on one thread, blocking. It works.
 
-### Functional Tests ([`c61b208`](https://github.com/nickelsworth/temper/commit/c61b208))
+### Functional Tests ([`c61b208`](https://github.com/temperlang/temper/commit/c61b208))
 
 The follow-up commit adds a functional test for `sleep()` to the compiler's test suite: sleep returns and execution continues, multiple sequential sleeps work, zero-millisecond sleep is handled, and sleep interleaves correctly with computation. It also adds raw mode support to the JS `readLine` implementation for single-keypress input.
 
@@ -82,15 +82,38 @@ This is the code that was impossible before the compiler changes. It uses `sleep
 
 18 tests covering initial state, movement in all directions, direction rejection (you cannot reverse into yourself), wall collision, self collision, point equality, opposite direction detection, direction deltas, PRNG determinism, PRNG range, and post-game-over behavior. They live in a separate module to avoid `readLine` blocking during test runs.
 
-## Running
+## Prerequisites
 
-Build the compiler with the `std/io` changes, then build the game:
+- JDK 21
+- Node.js v18+ (for the JS backend)
+- Lua 5.1 or 5.4 (for the Lua backend)
+- Rust 1.71+ with cargo (for the Rust backend)
+
+You do not need all of them. Pick a backend.
+
+## Building the Compiler
+
+This game requires `sleep()` and `readLine()`, which do not exist in the released Temper compiler. You need to build from the [`do-crimes-to-play-snake`](https://github.com/temperlang/temper/tree/do-crimes-to-play-snake) branch:
 
 ```bash
+git clone https://github.com/temperlang/temper.git
+cd temper
+git checkout do-crimes-to-play-snake
+./gradlew cli:build
+```
+
+The Temper CLI will be at `cli/build/install/temper/bin/temper`. Add it to your `PATH` or use the full path in subsequent commands.
+
+## Building the Game
+
+```bash
+cd /path/to/snake
 temper build -b js    # or: -b lua, -b rust, -b py
 ```
 
-Run with the backend directly (`temper run` does not trigger async blocks):
+## Running
+
+Run with the backend directly. `temper run` does not trigger async blocks, so you must invoke the compiled output yourself:
 
 ```bash
 # JavaScript
@@ -103,13 +126,17 @@ cd temper.out/lua && lua snake-game/init.lua
 cd temper.out/rust/snake-game && cargo run
 ```
 
-Run tests:
+## Tests
 
 ```bash
 temper test -b js
 ```
 
-Use w/a/s/d and Enter to steer. The snake starts going right. Do not go left.
+18 tests. They pass.
+
+## Controls
+
+w/a/s/d and Enter. The snake starts going right. Do not go left.
 
 ## Project Structure
 
