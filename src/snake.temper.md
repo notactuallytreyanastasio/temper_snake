@@ -316,7 +316,7 @@ A simple deterministic PRNG.
       let snakeBuilder = new ListBuilder<PlayerSnake>();
       var currentSeed = seed;
       for (var i = 0; i < numPlayers; ++i) {
-        let spawn = spawnPosition(width, height, i, numPlayers);
+        let spawn = spawnPosition(width, height, i, currentSeed);
         let dir = spawn.direction;
         let startX = spawn.point.x;
         let startY = spawn.point.y;
@@ -341,23 +341,28 @@ A simple deterministic PRNG.
     class SpawnInfo(public point: Point, public direction: Direction) {}
 
     let spawnPosition(
-      width: Int, height: Int, index: Int, total: Int,
+      width: Int, height: Int, index: Int, seed: Int,
     ): SpawnInfo {
-      var cx = 0;
-      var cy = 0;
-      if (width > 0) { cx = do { width / 2 } orelse 0; }
-      if (height > 0) { cy = do { height / 2 } orelse 0; }
-      var qx = 0;
-      var qy = 0;
-      if (width > 0) { qx = do { width / 4 } orelse 0; }
-      if (height > 0) { qy = do { height / 4 } orelse 0; }
-      // Spread players around the board
-      var slot = 0;
-      if (total > 0) { slot = do { index % 4 } orelse 0; }
-      if (slot == 0) { return new SpawnInfo(new Point(qx, cy), new Right()); }
-      if (slot == 1) { return new SpawnInfo(new Point(width - qx - 1, cy), new Left()); }
-      if (slot == 2) { return new SpawnInfo(new Point(cx, qy), new Down()); }
-      new SpawnInfo(new Point(cx, height - qy - 1), new Up())
+      // Buffer of 5 from each edge so the snake has room to react
+      let buf = 5;
+      let safeW = width - buf * 2;
+      let safeH = height - buf * 2;
+      if (safeW < 1 || safeH < 1) {
+        return new SpawnInfo(new Point(do { width / 2 } orelse 0, do { height / 2 } orelse 0), new Right());
+      }
+      // Use PRNG seeded per player for deterministic but spread-out positions
+      let r1 = nextRandom(seed * 7 + index * 131 + 37, safeW);
+      let r2 = nextRandom(r1.nextSeed, safeH);
+      let x = buf + r1.value;
+      let y = buf + r2.value;
+      // Pick a random direction
+      let r3 = nextRandom(r2.nextSeed, 4);
+      var dir: Direction = new Right();
+      if (r3.value == 0) { dir = new Right(); }
+      if (r3.value == 1) { dir = new Left(); }
+      if (r3.value == 2) { dir = new Down(); }
+      if (r3.value == 3) { dir = new Up(); }
+      new SpawnInfo(new Point(x, y), dir)
     }
 
 ## Collect All Segments
@@ -563,7 +568,7 @@ A simple deterministic PRNG.
 
     export let addPlayer(game: MultiSnakeGame, seed: Int): MultiSnakeGame {
       let newId = game.snakes.length;
-      let spawn = spawnPosition(game.width, game.height, newId, newId + 1);
+      let spawn = spawnPosition(game.width, game.height, newId, seed);
       let dir = spawn.direction;
       let delta = directionDelta(dir);
       let startX = spawn.point.x;

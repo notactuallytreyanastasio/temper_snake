@@ -156,7 +156,7 @@
     }
 
     test("multi game snakes start at different positions") {
-      let game = newMultiGame(20, 10, 2, 42);
+      let game = newMultiGame(60, 30, 2, 42);
       let s0 = game.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead()));
       let s1 = game.snakes.getOr(1, new PlayerSnake(0, [], new Right(), 0, new Dead()));
       let h0 = s0.segments.getOr(0, new Point(-1, -1));
@@ -173,10 +173,12 @@
     }
 
     test("multi tick moves both snakes") {
-      let game = newMultiGame(20, 10, 2, 42);
-      let h0Before = game.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead())).segments.getOr(0, new Point(0, 0));
-      let h1Before = game.snakes.getOr(1, new PlayerSnake(0, [], new Right(), 0, new Dead())).segments.getOr(0, new Point(0, 0));
-      let dirs: List<Direction> = [new Right(), new Left()];
+      let game = newMultiGame(60, 30, 2, 42);
+      let s0 = game.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      let s1 = game.snakes.getOr(1, new PlayerSnake(0, [], new Right(), 0, new Dead()));
+      let h0Before = s0.segments.getOr(0, new Point(0, 0));
+      let h1Before = s1.segments.getOr(0, new Point(0, 0));
+      let dirs: List<Direction> = [s0.direction, s1.direction];
       let after = multiTick(game, dirs);
       let h0After = after.snakes.getOr(0, new PlayerSnake(0, [], new Right(), 0, new Dead())).segments.getOr(0, new Point(0, 0));
       let h1After = after.snakes.getOr(1, new PlayerSnake(0, [], new Right(), 0, new Dead())).segments.getOr(0, new Point(0, 0));
