@@ -43,8 +43,14 @@ and broadcasts rendered frames to all connected players.
           let ws = await wsAccept(server);
 
           // First message determines player vs spectator
-          let firstMsg = do { await wsRecv(ws) } orelse "";
-          if (firstMsg == "spectate") {
+          let firstMsgRaw = do { await wsRecv(ws) } orelse null;
+          var isSpectator = false;
+          if (firstMsgRaw is String) {
+            if (firstMsgRaw == "spectate") {
+              isSpectator = true;
+            }
+          }
+          if (isSpectator) {
             // Spectator: just add to broadcast list, no snake
             wsConns.add(ws);
             console.log("Spectator connected!");
@@ -59,14 +65,14 @@ and broadcasts rendered frames to all connected players.
             console.log("Player ${playerId.toString()} (${symbol}) connected!");
 
             // Handle the first message if it was a direction
-            if (firstMsg is String) {
-              if (firstMsg == "u") {
+            if (firstMsgRaw is String) {
+              if (firstMsgRaw == "u") {
                 game = changePlayerDirection(game, playerId, new Up());
-              } else if (firstMsg == "d") {
+              } else if (firstMsgRaw == "d") {
                 game = changePlayerDirection(game, playerId, new Down());
-              } else if (firstMsg == "l") {
+              } else if (firstMsgRaw == "l") {
                 game = changePlayerDirection(game, playerId, new Left());
-              } else if (firstMsg == "r") {
+              } else if (firstMsgRaw == "r") {
                 game = changePlayerDirection(game, playerId, new Right());
               }
             }
